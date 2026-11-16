@@ -9,13 +9,20 @@ use crate::config::{self, Config, Provider};
 use crate::engine::{self, Slot};
 use crate::notes::{self, Note};
 use crate::recipe;
-use crate::status::{Check, Level};
+use crate::status::{self, Check, Level};
 use eframe::egui::{self, Color32, RichText, TextureHandle, Vec2};
 use jobs::Msg;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+
+/// Long edge of the before / after pictures.
+const COMPARE_SIZE: u32 = 1400;
+
+/// Long edge of the photo in the note editor: room to circle small things.
+const NOTE_EDITOR_SIZE: u32 = 1600;
 
 pub fn run() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
@@ -372,7 +379,7 @@ impl App {
                             line.push_str(", closed eyes: review");
                         }
                         if !rep.red_eye.is_empty() {
-                            line.push_str(&format!(", {} red eye(s) to fix", rep.red_eye.len()));
+                            let _ = write!(line, ", {} red eye(s) to fix", rep.red_eye.len());
                         }
                         self.say(line);
                         if let Some(p) = self.photos.get_mut(i) {
@@ -486,11 +493,11 @@ impl App {
         let Some(p) = self.tested.and_then(|i| self.photos.get(i)) else {
             return;
         };
-        let before = thumbs::load_rgba(&p.path, &self.cfg.lightcraft.cli, 1400);
+        let before = thumbs::load_rgba(&p.path, &self.cfg.lightcraft.cli, COMPARE_SIZE);
         let after_path = p.outs.iter().find(|o| thumbs::is_viewable(o)).cloned();
         let after = after_path
             .as_ref()
-            .and_then(|o| thumbs::load_rgba(o, &self.cfg.lightcraft.cli, 1400));
+            .and_then(|o| thumbs::load_rgba(o, &self.cfg.lightcraft.cli, COMPARE_SIZE));
         let Some(before) = before else {
             self.say("Cannot show the original for comparison.");
             return;
@@ -628,7 +635,10 @@ impl App {
             });
             ui.separator();
             ui.heading("Checks");
-            for c in self.checks.clone() {
+            // The click is acted on after the loop, so the checks are only borrowed.
+            let idle = self.busy.is_none();
+            let mut install = None;
+            for c in &self.checks {
                 ui.horizontal(|ui| {
                     let (txt, col) = match c.level {
                         Level::Ok => ("ok", Color32::from_rgb(80, 180, 110)),
@@ -638,24 +648,29 @@ impl App {
                     ui.colored_label(col, RichText::new(txt).monospace());
                     ui.label(RichText::new(c.name).strong());
                     ui.label(&c.detail);
-                    let model = match c.name {
-                        "AI masks" => Some(("sam3", "SAM 3 (about 3.4 GB, Meta's SAM License)")),
-                        "Face detector" => Some(("yunet", "YuNet (232 KB, MIT)")),
-                        "Lens database" => Some(("lensdb", "lensfun database (CC BY-SA 3.0)")),
-                        _ => None,
-                    };
+                    let model = c.model.map(|m| {
+                        let licence = match m {
+                            status::Model::Sam3 => "SAM 3 (about 3.4 GB, Meta's SAM License)",
+                            status::Model::Yunet => "YuNet (232 KB, MIT)",
+                            status::Model::LensDb => "lensfun database (CC BY-SA 3.0)",
+                        };
+                        (m, licence)
+                    });
                     if let (Level::Info, Some((name, licence))) = (c.level, model)
                         && ui
-                            .add_enabled(self.busy.is_none(), egui::Button::new(format!("Install {name}")))
+                            .add_enabled(idle, egui::Button::new(format!("Install {name}")))
                             .on_hover_text(format!(
                                 "Downloads {licence} through the running LightCraft (lightcraft --control). Clicking means you accept its licence."
                             ))
                             .clicked()
                     {
-                        self.busy = Some(Busy::Installing);
-                        jobs::install(self.cfg.clone(), name.to_owned(), self.tx.clone(), self.ctx.clone());
+                        install = Some(name);
                     }
                 });
+            }
+            if let Some(name) = install {
+                self.busy = Some(Busy::Installing);
+                jobs::install(self.cfg.clone(), name, self.tx.clone(), self.ctx.clone());
             }
         });
     }
@@ -800,11 +815,8 @@ impl App {
                     // Which apps this recipe turns on; the others stay off.
                     let used = r.apps_used();
                     ui.horizontal(|ui| {
-                        for (app, label) in [
-                            ("lightcraft", "LightCraft"),
-                            ("photocraft", "PhotoCraft"),
-                            ("vectorcraft", "VectorCraft"),
-                        ] {
+                        for app in crate::apps::App::ALL {
+                            let label = app.label();
                             if used.contains(&app) {
                                 ui.colored_label(Color32::from_rgb(80, 180, 110), format!("● {label} on"));
                             } else {
@@ -898,7 +910,7 @@ impl App {
             return;
         };
         if self.big.as_ref().is_none_or(|(p, _)| *p != path) {
-            match thumbs::load_rgba(&path, &self.cfg.lightcraft.cli, 1600) {
+            match thumbs::load_rgba(&path, &self.cfg.lightcraft.cli, NOTE_EDITOR_SIZE) {
                 Some(img) => {
                     let t = self
                         .ctx

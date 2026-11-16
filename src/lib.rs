@@ -1,14 +1,5 @@
 //! Kimera: a photographer's conveyor over the Craft apps' command-line tools. The CLI
 //! (`kimera`) and the window (`kimera-gui`) share everything here.
-#![forbid(unsafe_code)]
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 pub mod ai;
 pub mod analysis;
@@ -49,11 +40,16 @@ pub fn catalogs(
 ) -> Result<Vec<catalog::Catalog>> {
     let cache = cfg.work.dir.join(".kimera");
     let mut out = vec![
-        catalog::load("lightcraft", &cfg.lightcraft.cli, &cache, cancel)?,
-        catalog::load("photocraft", &cfg.photocraft.cli, &cache, cancel)?,
+        catalog::load(apps::App::LightCraft, &cfg.lightcraft.cli, &cache, cancel)?,
+        catalog::load(apps::App::PhotoCraft, &cfg.photocraft.cli, &cache, cancel)?,
     ];
     if let Some(vc) = &cfg.vectorcraft {
-        out.push(catalog::load("vectorcraft", &vc.cli, &cache, cancel)?);
+        out.push(catalog::load(
+            apps::App::VectorCraft,
+            &vc.cli,
+            &cache,
+            cancel,
+        )?);
     }
     Ok(out)
 }

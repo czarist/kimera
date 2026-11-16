@@ -1,5 +1,4 @@
 //! `kimera-gui`: the Kimera window.
-#![forbid(unsafe_code)]
 #![windows_subsystem = "windows"]
 
 fn main() -> std::process::ExitCode {

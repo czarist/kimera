@@ -4,6 +4,32 @@ All notable changes to Kimera are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Notes on a photo**: circle part of a photo in the window (*Notes…*, or double-click) and say
+  what to do there; `--notes FILE` on `kimera run` and `kimera ask`. The AI sees the photo with the
+  loops drawn and returns steps for that photo only, always in optional groups. Notes are kept
+  per folder in the work folder. *Test on 1 photo* picks the photo with notes.
+- A run turns LightCraft or PhotoCraft on by itself when per-photo steps need an app the recipe
+  does not use.
+- The window shows which apps a recipe turns on (LightCraft / PhotoCraft / VectorCraft on or off).
+- `AGENTS.md`: guidance for AI coding agents (commands, rules, Craft CLI behaviour, verification,
+  which installed skills to use).
+- `.github/dependabot.yml` for actions and crates.
+
+### Changed
+
+- The recipe writer turns on only the apps a request needs, and refuses PhotoCraft stages without
+  steps; `cleanup-cinematic` is LightCraft only.
+- README (English and Brazilian Portuguese) in the project's showcase style.
+- CI: read-only token by default, actions pinned to commit SHAs, no persisted credentials,
+  `cargo fmt --check`, Rust caching, cancelled superseded runs, docs-only changes skipped.
+- Code (no behaviour change): apps and LightCraft models are enums instead of strings;
+  long argument lists became `StageJob`, `NotesJob` and `AskArgs`; sizes and limits are named
+  constants; lints are configured only in `Cargo.toml`; the notes file is sorted.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added

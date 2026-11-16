@@ -60,10 +60,11 @@ pub fn checks(cfg: Config, tx: Sender<Msg>, ctx: Context) {
     });
 }
 
-pub fn install(cfg: Config, name: String, tx: Sender<Msg>, ctx: Context) {
+/// Installs a model; the user accepted its licence by clicking Install.
+pub fn install(cfg: Config, name: status::Model, tx: Sender<Msg>, ctx: Context) {
     std::thread::spawn(move || {
         let mut last = String::new();
-        let r = status::install(&cfg, &name, true, &mut |line| {
+        let r = status::install(&cfg, name, &mut |line| {
             if line != last {
                 last = line.to_owned();
                 send(&tx, &ctx, Msg::Log(line.to_owned()));
@@ -72,7 +73,7 @@ pub fn install(cfg: Config, name: String, tx: Sender<Msg>, ctx: Context) {
         send(
             &tx,
             &ctx,
-            Msg::Installed(r.map(|()| name).map_err(|e| format!("{e:#}"))),
+            Msg::Installed(r.map(|()| name.to_string()).map_err(|e| format!("{e:#}"))),
         );
     });
 }
@@ -203,17 +204,18 @@ fn run_inner(job: &RunJob) -> anyhow::Result<String> {
     }
     if !job.notes.is_empty() {
         let cats = crate::catalogs(cfg, &job.cancel)?;
-        crate::notes::plan_all(
-            &crate::ai_client(cfg),
-            &cats,
-            &cfg.lightcraft.cli,
-            &job.files,
-            &job.notes,
-            &cfg.work.dir.join(".kimera").join("notes-look"),
-            &mut extras,
-            &job.cancel,
-            &mut |l| send(&job.tx, &job.ctx, Msg::Log(l)),
-        )?;
+        let client = crate::ai_client(cfg);
+        let scratch = cfg.work.dir.join(".kimera").join("notes-look");
+        crate::notes::NotesJob {
+            client: &client,
+            catalogs: &cats,
+            lightcraft: &cfg.lightcraft.cli,
+            scratch: &scratch,
+            cancel: &job.cancel,
+        }
+        .plan_all(&job.files, &job.notes, &mut extras, &mut |l| {
+            send(&job.tx, &job.ctx, Msg::Log(l));
+        })?;
     }
     let added = engine::ensure_apps(&mut r, &extras, &job.files);
     if !added.is_empty() {
@@ -222,7 +224,11 @@ fn run_inner(job: &RunJob) -> anyhow::Result<String> {
             &job.ctx,
             Msg::Log(format!(
                 "Turned {} on for the per-photo steps",
-                added.join(" and ")
+                added
+                    .iter()
+                    .map(|a| a.label())
+                    .collect::<Vec<_>>()
+                    .join(" and ")
             )),
         );
         send(&job.tx, &job.ctx, Msg::Plan(engine::plan(&r)));

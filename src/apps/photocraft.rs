@@ -66,6 +66,9 @@ fn succeeded_steps(stdout: &str) -> usize {
         .count()
 }
 
+/// An A4 page at 300 ppi, in pixels (portrait).
+const A4_300PPI: (u32, u32) = (2480, 3508);
+
 /// Client proof: A4 contact sheets (300 ppi, file names as captions), one PDF per page of
 /// `columns × rows` photos, written as `<out_dir>/proof-01.pdf`, `proof-02.pdf`…
 pub fn proof(
@@ -82,7 +85,7 @@ pub fn proof(
     for (i, chunk) in files.chunks(per_page).enumerate() {
         let out = out_dir.join(format!("proof-{:02}.pdf", i.saturating_add(1)));
         let params = serde_json::json!({
-            "input": chunk, "units": "pixels", "width": 2480, "height": 3508, "resolution": 300,
+            "input": chunk, "units": "pixels", "width": A4_300PPI.0, "height": A4_300PPI.1, "resolution": 300,
             "columns": columns, "rows": rows, "caption": true, "flatten": true,
         });
         let mut cmd = Command::new(cli);

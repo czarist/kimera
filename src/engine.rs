@@ -6,7 +6,7 @@
 //! Stages are laid out as *slots* ([`plan`]): the shared stages first, then each variant's own
 //! stages, which start from the shared result.
 
-use crate::apps::{StageFailed, lightcraft, photocraft, vectorcraft};
+use crate::apps::{App, StageFailed, lightcraft, photocraft, vectorcraft};
 use crate::procrun;
 use crate::recipe::{Recipe, Stage, Step};
 use anyhow::{Context, Result, bail};
@@ -38,7 +38,7 @@ pub struct Apps {
 pub struct Slot {
     /// `None` for shared stages.
     pub variant: Option<String>,
-    pub app: &'static str,
+    pub app: App,
     /// Folder name inside the run: `1-photocraft`, `3-stories-lightcraft`.
     pub dir: String,
 }
@@ -109,7 +109,7 @@ pub type Extras = HashMap<usize, PhotoExtras>;
 /// Adds the stages per-photo extras need when the recipe has none of that app: a LightCraft
 /// stage (16-bit TIFF) or a PhotoCraft stage (TIFF) at the start, LightCraft first when raw
 /// photos need developing before PhotoCraft. Returns what was added, for the log.
-pub fn ensure_apps(recipe: &mut Recipe, extras: &Extras, photos: &[PathBuf]) -> Vec<&'static str> {
+pub fn ensure_apps(recipe: &mut Recipe, extras: &Extras, photos: &[PathBuf]) -> Vec<App> {
     use crate::recipe::{FileExport, LightCraftStage, PhotoCraftStage};
     let all: Vec<&Stage> = slot_stages(recipe);
     let has_lc = all.iter().any(|s| matches!(s, Stage::Lightcraft(_)));
@@ -130,14 +130,14 @@ pub fn ensure_apps(recipe: &mut Recipe, extras: &Extras, photos: &[PathBuf]) -> 
     let mut front: Vec<Stage> = Vec::new();
     if need_lc || (need_pc && photos.iter().any(|p| is_raw(p)) && !has_lc) {
         front.push(lc());
-        added.push("lightcraft");
+        added.push(App::LightCraft);
     }
     if need_pc {
         front.push(Stage::Photocraft(PhotoCraftStage {
             out_ext: "tif".into(),
             steps: Vec::new(),
         }));
-        added.push("photocraft");
+        added.push(App::PhotoCraft);
     }
     if !front.is_empty() {
         front.append(&mut recipe.stages);
@@ -390,7 +390,14 @@ fn run_chain(
         on(Event::StageStarted { photo, slot });
         let out = dir.join(format!("{name}.{}", stage.out_ext()));
         let t = Instant::now();
-        match run_stage(cx, photo, slot, stage, &cur, &out, sum, on) {
+        let job = StageJob {
+            photo,
+            slot,
+            stage,
+            input: &cur,
+            out: &out,
+        };
+        match run_stage(cx, &job, sum, on) {
             Ok(()) => {
                 on(Event::StageDone {
                     photo,
@@ -414,18 +421,29 @@ fn run_chain(
     Ok(cur)
 }
 
-/// Runs one stage, leaving out optional groups that fail, one by one.
-#[allow(clippy::too_many_arguments)]
-fn run_stage(
-    cx: &Ctx,
+/// One photo in one slot: what [`run_stage`] works on.
+struct StageJob<'a> {
     photo: usize,
     slot: usize,
-    stage: &Stage,
-    input: &Path,
-    out: &Path,
+    stage: &'a Stage,
+    input: &'a Path,
+    out: &'a Path,
+}
+
+/// Runs one stage, leaving out optional groups that fail, one by one.
+fn run_stage(
+    cx: &Ctx,
+    job: &StageJob<'_>,
     sum: &mut Summary,
     on: &mut dyn FnMut(Event),
 ) -> Result<()> {
+    let StageJob {
+        photo,
+        slot,
+        stage,
+        input,
+        out,
+    } = *job;
     let extra: &[Step] = match (cx.extras_at.contains(&slot), cx.extras.get(&photo)) {
         (true, Some(x)) => match stage {
             Stage::Lightcraft(_) => &x.lightcraft,
@@ -559,7 +577,7 @@ mod tests {
             },
         )]
         .into();
-        assert_eq!(ensure_apps(&mut r, &ex, &jpg), ["photocraft"]);
+        assert_eq!(ensure_apps(&mut r, &ex, &jpg), [App::PhotoCraft]);
         let dirs: Vec<String> = plan(&r).into_iter().map(|s| s.dir).collect();
         assert_eq!(dirs, ["1-photocraft", "2-lightcraft"]);
         assert_eq!(first_slots(&r).len(), 2);
@@ -568,7 +586,7 @@ mod tests {
         let mut r = crate::recipe::parse("[[stage]]\napp = \"vectorcraft\"\n")?;
         assert_eq!(
             ensure_apps(&mut r, &ex, &[PathBuf::from("a.cr3")]),
-            ["lightcraft", "photocraft"]
+            [App::LightCraft, App::PhotoCraft]
         );
         Ok(())
     }

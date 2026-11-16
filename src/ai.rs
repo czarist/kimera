@@ -6,12 +6,25 @@ use crate::procrun;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 const ANTHROPIC_VERSION: &str = "2026-10-21";
+
+/// Room for notes plus a recipe; a recipe is a few hundred tokens, the notes far less.
+const MAX_TOKENS: u32 = 16_000;
+
+/// How hard Claude thinks: recipe writing is routine, so `medium` (Opus 5.5's default).
+const EFFORT: &str = "medium";
+
+/// Largest reply body read from an AI service (a reply is text; anything bigger is an error page or abuse).
+const MAX_REPLY_BYTES: u64 = 64 * 1024 * 1024;
+
+/// A whole AI answer, thinking included, must arrive within this.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// `<base>/<path>`, the base from `env` (a proxy or gateway) or the official one.
 fn endpoint(env: &str, official: &str, path: &str) -> String {
@@ -103,7 +116,7 @@ impl Client {
 
     fn agent() -> ureq::Agent {
         ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(15 * 60)))
+            .timeout_global(Some(REQUEST_TIMEOUT))
             .http_status_as_error(false)
             .build()
             .into()
@@ -130,10 +143,10 @@ impl Client {
             .collect::<Result<_>>()?;
         let mut body = json!({
             "model": self.cfg.model(),
-            "max_tokens": 16000,
+            "max_tokens": MAX_TOKENS,
             "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             "messages": messages,
-            "output_config": {"effort": "medium"},
+            "output_config": {"effort": EFFORT},
         });
         // Server-side fallback on a safety decline, for the models that support it.
         let fallback = matches!(
@@ -253,7 +266,7 @@ impl Client {
                         text.push_str("\n\n");
                     }
                     Part::Jpeg(path) => {
-                        text.push_str(&format!("[image: {}]\n\n", path.display()));
+                        let _ = write!(text, "[image: {}]\n\n", path.display());
                         images.push(path.clone());
                     }
                 }
@@ -346,7 +359,7 @@ fn send(
     let text = resp
         .body_mut()
         .with_config()
-        .limit(64 * 1024 * 1024)
+        .limit(MAX_REPLY_BYTES)
         .read_to_string()
         .context("reading the AI service's reply")?;
     let v = serde_json::from_str(&text).unwrap_or(Value::String(text));

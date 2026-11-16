@@ -22,6 +22,8 @@ pub struct Check {
     pub name: &'static str,
     pub level: Level,
     pub detail: String,
+    /// The optional LightCraft model this check is about, when it can be installed.
+    pub model: Option<Model>,
 }
 
 fn check(name: &'static str, r: Result<String>, missing: Level) -> Check {
@@ -30,11 +32,13 @@ fn check(name: &'static str, r: Result<String>, missing: Level) -> Check {
             name,
             level: Level::Ok,
             detail,
+            model: None,
         },
         Err(e) => Check {
             name,
             level: missing,
             detail: format!("{e:#}"),
+            model: None,
         },
     }
 }
@@ -97,11 +101,15 @@ pub struct Models {
 impl Models {
     pub fn read(cfg: &Config, cancel: &AtomicBool) -> Option<Models> {
         let checks = models(cfg, cancel);
-        let ok = |n: &str| checks.iter().any(|c| c.name == n && c.level == Level::Ok);
+        let ok = |m: Model| {
+            checks
+                .iter()
+                .any(|c| c.model == Some(m) && c.level == Level::Ok)
+        };
         (checks.len() == 3).then(|| Models {
-            sam3: ok("AI masks"),
-            yunet: ok("Face detector"),
-            lensdb: ok("Lens database"),
+            sam3: ok(Model::Sam3),
+            yunet: ok(Model::Yunet),
+            lensdb: ok(Model::LensDb),
         })
     }
 
@@ -120,7 +128,7 @@ impl Models {
     pub fn missing_for(&self, r: &crate::recipe::Recipe) -> Vec<String> {
         let mut out = Vec::new();
         for (app, cmd, kind) in r.steps_with_kind() {
-            if app != "lightcraft" {
+            if app != crate::apps::App::LightCraft {
                 continue;
             }
             let needs_sam = cmd == "lensBlur.findSubject"
@@ -160,6 +168,7 @@ pub fn models(cfg: &Config, cancel: &AtomicBool) -> Vec<Check> {
     );
     let Ok(q) = q else {
         return vec![Check {
+            model: None,
             name: "LC models",
             level: Level::Info,
             detail: "could not ask LightCraft about its models".into(),
@@ -185,26 +194,30 @@ pub fn models(cfg: &Config, cancel: &AtomicBool) -> Vec<Check> {
         .and_then(|v| v.get("lenses"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let model = |name, ok: bool, yes: String, no: &str| Check {
+    let model = |name, which: Model, ok: bool, yes: String, no: &str| Check {
         name,
+        model: Some(which),
         level: if ok { Level::Ok } else { Level::Info },
         detail: if ok { yes } else { no.to_owned() },
     };
     vec![
         model(
             "AI masks",
+            Model::Sam3,
             sam,
             "SAM 3 installed (subject, background, sky, prompt masks)".into(),
             "SAM 3 not installed: no subject/background/sky/prompt masks (`kimera models install sam3 --accept`, about 3.4 GB)",
         ),
         model(
             "Face detector",
+            Model::Yunet,
             yunet,
             "YuNet installed (automatic blemish removal)".into(),
             "YuNet not installed: no automatic blemish removal (`kimera models install yunet --accept`, 232 KB)",
         ),
         model(
             "Lens database",
+            Model::LensDb,
             lenses > 0,
             format!("{lenses} lens profiles"),
             "not downloaded: no lens profile corrections (`kimera models install lensdb --accept`)",
@@ -212,25 +225,68 @@ pub fn models(cfg: &Config, cancel: &AtomicBool) -> Vec<Check> {
     ]
 }
 
+/// LightCraft's id for the YuNet face detector.
 const YUNET: &str = "yunet-2023mar";
 
-/// Installs a model through the running LightCraft (`lightcraft --control`), waiting for the
-/// download. `accept` says the user accepted the model's licence.
-pub fn install(
-    cfg: &Config,
-    which: &str,
-    accept: bool,
-    progress: &mut dyn FnMut(&str),
-) -> Result<()> {
-    if !accept {
-        bail!(
-            "installing {which} downloads a third-party model under its own licence; run again with --accept to agree"
-        );
+/// How long a model download may take before Kimera gives up waiting (SAM 3 is about 3.4 GB).
+const DOWNLOAD_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// How often the download's progress is asked for.
+const POLL_EVERY: Duration = Duration::from_secs(2);
+
+/// An optional LightCraft model some recipes need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Model {
+    /// SAM 3 AI masks: subject, background, sky, object and prompt masks (about 3.4 GB).
+    Sam3,
+    /// YuNet face detector: automatic blemish removal (232 KB).
+    Yunet,
+    /// lensfun lens profiles.
+    LensDb,
+}
+
+impl Model {
+    /// The name used by `kimera models install`: `sam3`, `yunet`, `lensdb`.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Model::Sam3 => "sam3",
+            Model::Yunet => "yunet",
+            Model::LensDb => "lensdb",
+        }
     }
+}
+
+impl std::fmt::Display for Model {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
+impl std::str::FromStr for Model {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "sam3" => Ok(Model::Sam3),
+            "yunet" => Ok(Model::Yunet),
+            "lensdb" => Ok(Model::LensDb),
+            other => bail!("unknown model {other:?}: sam3, yunet or lensdb"),
+        }
+    }
+}
+
+/// Installs a model through the running LightCraft (`lightcraft --control`) and waits for the
+/// download. Call it only after the user accepted the model's licence.
+///
+/// # Errors
+///
+/// When LightCraft does not answer, the download fails, or it takes longer than
+/// [`DOWNLOAD_LIMIT`].
+pub fn install(cfg: &Config, which: Model, progress: &mut dyn FnMut(&str)) -> Result<()> {
     let mut lc = lightcraft::Control::new(&cfg.lightcraft.control)?;
     type Done = fn(&Value) -> Option<Result<()>>;
     let (start, status, done): ((&str, Value), &str, Done) = match which {
-        "sam3" => (
+        Model::Sam3 => (
             ("segment.model.download", json!({"acknowledged": true})),
             "segment.model.status",
             |v| {
@@ -242,7 +298,7 @@ pub fn install(
                     .map(|e| Err(anyhow::anyhow!("SAM 3 download failed: {e}")))
             },
         ),
-        "yunet" => (
+        Model::Yunet => (
             (
                 "faces.models.download",
                 json!({"id": YUNET, "acknowledged": true}),
@@ -258,7 +314,7 @@ pub fn install(
                 installed.then_some(Ok(()))
             },
         ),
-        "lensdb" => (
+        Model::LensDb => (
             ("lens.downloadDatabase", json!({})),
             "lens.databaseStatus",
             |v| match v.pointer("/download/state").and_then(Value::as_str) {
@@ -269,7 +325,6 @@ pub fn install(
                 _ => None,
             },
         ),
-        other => bail!("unknown model {other:?}: sam3, yunet or lensdb"),
     };
     lc.execute(start.0, start.1)?;
     let t = Instant::now();
@@ -278,7 +333,7 @@ pub fn install(
         if let Some(r) = done(&v) {
             return r;
         }
-        if t.elapsed() > Duration::from_secs(2 * 60 * 60) {
+        if t.elapsed() > DOWNLOAD_LIMIT {
             bail!("{which}: still downloading after 2 hours; check LightCraft");
         }
         if let (Some(d), Some(n)) = (
@@ -294,7 +349,7 @@ pub fn install(
         } else {
             progress(&format!("{which}: downloading…"));
         }
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(POLL_EVERY);
     }
 }
 

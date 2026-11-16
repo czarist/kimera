@@ -1,13 +1,4 @@
 //! `kimera`: the command line. `kimera-gui` is the window.
-#![forbid(unsafe_code)]
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -55,28 +46,7 @@ enum Cmd {
         paths: Vec<PathBuf>,
     },
     /// Describe the edit; the AI writes the recipe (shown, saved, and run with --run)
-    Ask {
-        /// What to do, in your words: "remove the pimples and give it a film look"
-        request: String,
-        /// Photo files or folders
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
-        /// Change this recipe instead of starting over
-        #[arg(long)]
-        from: Option<PathBuf>,
-        /// Where to save the recipe (default: <work>/recipes/ask-<time>.toml)
-        #[arg(long)]
-        save: Option<PathBuf>,
-        /// Run the recipe right away
-        #[arg(long)]
-        run: bool,
-        /// With --run: let the AI look at each photo first
-        #[arg(long)]
-        analyse: bool,
-        /// Notes per photo: a JSON file {"photo path": [{"points": [[x, y], …], "text": "…"}]}
-        #[arg(long)]
-        notes: Option<PathBuf>,
-    },
+    Ask(AskArgs),
     /// Let the AI look at photos: faces, closed eyes, red eyes
     Analyse {
         #[arg(required = true)]
@@ -126,11 +96,36 @@ enum Cmd {
     Recipes,
 }
 
+/// `kimera ask`: the request, the photos, and what to do with the recipe.
+#[derive(clap::Args)]
+struct AskArgs {
+    /// What to do, in your words: "remove the pimples and give it a film look"
+    request: String,
+    /// Photo files or folders
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+    /// Change this recipe instead of starting over
+    #[arg(long)]
+    from: Option<PathBuf>,
+    /// Where to save the recipe (default: <work>/recipes/ask-<time>.toml)
+    #[arg(long)]
+    save: Option<PathBuf>,
+    /// Run the recipe right away
+    #[arg(long)]
+    run: bool,
+    /// With --run: let the AI look at each photo first
+    #[arg(long)]
+    analyse: bool,
+    /// Notes per photo: a JSON file {"photo path": [{"points": [[x, y], …], "text": "…"}]}
+    #[arg(long)]
+    notes: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 enum ModelsCmd {
     /// sam3 (AI masks, ~3.4 GB), yunet (face detector, 232 KB) or lensdb (lens profiles)
     Install {
-        name: String,
+        name: status::Model,
         /// You accept the model's licence (shown by `kimera doctor`)
         #[arg(long)]
         accept: bool,
@@ -175,24 +170,7 @@ fn run(cli: Cli) -> Result<()> {
             )
             .and_then(|r| r.ok())
         }
-        Cmd::Ask {
-            request,
-            paths,
-            from,
-            save,
-            run,
-            analyse,
-            notes,
-        } => ask(
-            &cfg,
-            &request,
-            &paths,
-            from,
-            save,
-            run,
-            (analyse, notes),
-            &cancel,
-        ),
+        Cmd::Ask(args) => ask(&cfg, args, &cancel),
         Cmd::Analyse { paths } => look(&cfg, &photos(&paths)?, &cancel).map(|_| ()),
         Cmd::Pipeline {
             recipe,
@@ -202,7 +180,12 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Models {
             cmd: ModelsCmd::Install { name, accept },
         } => {
-            status::install(&cfg, &name, accept, &mut |m| println!("{m}"))?;
+            if !accept {
+                bail!(
+                    "installing {name} downloads a third-party model under its own licence; run again with --accept to agree"
+                );
+            }
+            status::install(&cfg, name, &mut |m| println!("{m}"))?;
             println!("{name} installed");
             Ok(())
         }
@@ -293,17 +276,17 @@ fn doctor(cfg: &config::Config, cancel: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn ask(
-    cfg: &config::Config,
-    request: &str,
-    paths: &[PathBuf],
-    from: Option<PathBuf>,
-    save: Option<PathBuf>,
-    run: bool,
-    (analyse, notes): (bool, Option<PathBuf>),
-    cancel: &AtomicBool,
-) -> Result<()> {
+fn ask(cfg: &config::Config, args: AskArgs, cancel: &AtomicBool) -> Result<()> {
+    let AskArgs {
+        request,
+        paths,
+        from,
+        save,
+        run,
+        analyse,
+        notes,
+    } = args;
+    let (request, paths) = (request.as_str(), paths.as_slice());
     let files = photos(paths)?;
     let previous = match &from {
         Some(p) => {
@@ -468,17 +451,16 @@ fn extras_for(
             println!("No photo of this run has notes in {}", path.display());
         } else {
             let cats = kimera::catalogs(cfg, cancel)?;
-            kimera::notes::plan_all(
-                &kimera::ai_client(cfg),
-                &cats,
-                &cfg.lightcraft.cli,
-                files,
-                &by_index,
-                &cfg.work.dir.join(".kimera").join("notes-look"),
-                &mut extras,
+            let client = kimera::ai_client(cfg);
+            let scratch = cfg.work.dir.join(".kimera").join("notes-look");
+            kimera::notes::NotesJob {
+                client: &client,
+                catalogs: &cats,
+                lightcraft: &cfg.lightcraft.cli,
+                scratch: &scratch,
                 cancel,
-                &mut |l| println!("{l}"),
-            )?;
+            }
+            .plan_all(files, &by_index, &mut extras, &mut |l| println!("{l}"))?;
         }
     }
     for app in engine::ensure_apps(r, &extras, files) {
@@ -664,7 +646,7 @@ fn stages(
         .iter()
         .map(|s| match &s.variant {
             Some(v) => format!("{}[{v}]", s.app),
-            None => s.app.to_owned(),
+            None => s.app.to_string(),
         })
         .collect();
     println!(

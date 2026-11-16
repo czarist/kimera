@@ -13,6 +13,7 @@
 //! export = { format = "jpg", quality = 92 }
 //! ```
 
+use crate::apps::App;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -59,7 +60,7 @@ impl Recipe {
 
     /// Every non-optional step with its app and its `kind` parameter (masks), for model checks
     /// (an optional step that fails is left out, so it never stops a photo).
-    pub fn steps_with_kind(&self) -> Vec<(&'static str, &str, Option<String>)> {
+    pub fn steps_with_kind(&self) -> Vec<(App, &str, Option<String>)> {
         self.stages
             .iter()
             .chain(self.variants.iter().flat_map(|v| &v.stages))
@@ -81,21 +82,18 @@ impl Recipe {
     }
 
     /// The apps this recipe turns on, in Craft order; the others stay off.
-    pub fn apps_used(&self) -> Vec<&'static str> {
-        let used: Vec<&'static str> = self
+    pub fn apps_used(&self) -> Vec<App> {
+        let used: Vec<App> = self
             .stages
             .iter()
             .chain(self.variants.iter().flat_map(|v| &v.stages))
             .map(Stage::app)
             .collect();
-        ["lightcraft", "photocraft", "vectorcraft"]
-            .into_iter()
-            .filter(|a| used.contains(a))
-            .collect()
+        App::ALL.into_iter().filter(|a| used.contains(a)).collect()
     }
 
     /// Every command id the recipe uses, with its app.
-    pub fn commands(&self) -> Vec<(&'static str, &str)> {
+    pub fn commands(&self) -> Vec<(App, &str)> {
         self.stages
             .iter()
             .chain(self.variants.iter().flat_map(|v| &v.stages))
@@ -113,11 +111,11 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub fn app(&self) -> &'static str {
+    pub fn app(&self) -> App {
         match self {
-            Stage::Photocraft(_) => "photocraft",
-            Stage::Lightcraft(_) => "lightcraft",
-            Stage::Vectorcraft(_) => "vectorcraft",
+            Stage::Photocraft(_) => App::PhotoCraft,
+            Stage::Lightcraft(_) => App::LightCraft,
+            Stage::Vectorcraft(_) => App::VectorCraft,
         }
     }
 
@@ -440,7 +438,7 @@ mod tests {
             "[[stage]]\napp = \"photocraft\"\n[[stage]]\napp = \"lightcraft\"\nexport = { format = \"tif\", bit_depth = 16 }\n",
         )?;
         let apps: Vec<_> = r.stages.iter().map(Stage::app).collect();
-        assert_eq!(apps, ["photocraft", "lightcraft"]);
+        assert_eq!(apps, [App::PhotoCraft, App::LightCraft]);
         assert_eq!(r.stages[0].out_ext(), "tif");
         assert_eq!(r.stages[1].out_ext(), "tif");
         Ok(())
@@ -503,7 +501,7 @@ steps = [{ cmd = \"mask.add\", optional = \"teeth\" }]
         assert_eq!(c.len(), 2);
         assert_eq!(c[1].0, Some("stories"));
         assert_eq!(c[1].1.len(), 2);
-        assert_eq!(r.commands(), [("lightcraft", "mask.add")]);
+        assert_eq!(r.commands(), [(App::LightCraft, "mask.add")]);
         assert_eq!(
             r.variants[1].stages[0].steps()[0].optional.as_deref(),
             Some("teeth")

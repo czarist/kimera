@@ -1,12 +1,13 @@
 //! The Craft apps' command registries, read from their CLIs and cached per app version. The AI
 //! gets them in its prompt, and every recipe it writes is checked against them.
 
-use crate::apps::lightcraft;
+use crate::apps::{App, lightcraft};
 use crate::procrun;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
@@ -22,7 +23,7 @@ pub struct Cmd {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Catalog {
-    pub app: String,
+    pub app: App,
     pub version: String,
     pub commands: Vec<Cmd>,
 }
@@ -68,12 +69,7 @@ impl Catalog {
             }
             if detailed.contains(&c.id) {
                 let params = if c.params.is_empty() { "{}" } else { &c.params };
-                full.push_str(&format!(
-                    "- `{}` ({}): {}\n",
-                    c.id,
-                    c.label,
-                    one_line(params)
-                ));
+                let _ = writeln!(full, "- `{}` ({}): {}", c.id, c.label, one_line(params));
             } else {
                 rest.push(c.id.as_str());
             }
@@ -87,10 +83,13 @@ impl Catalog {
     }
 }
 
+/// Longest parameter text per command in the prompt; the few longer ones (app.export) are cut.
+const PARAMS_LIMIT: usize = 700;
+
 fn one_line(s: &str) -> String {
     let s: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if s.chars().count() > 700 {
-        let cut: String = s.chars().take(700).collect();
+    if s.chars().count() > PARAMS_LIMIT {
+        let cut: String = s.chars().take(PARAMS_LIMIT).collect();
         format!("{cut}…")
     } else {
         s
@@ -116,7 +115,7 @@ pub fn mentioned_ids(text: &str) -> HashSet<String> {
 }
 
 /// The app's catalog, from `cache_dir` when this version was read before.
-pub fn load(app: &str, cli: &Path, cache_dir: &Path, cancel: &AtomicBool) -> Result<Catalog> {
+pub fn load(app: App, cli: &Path, cache_dir: &Path, cancel: &AtomicBool) -> Result<Catalog> {
     let version = crate::apps::version(cli)?;
     let safe: String = version
         .chars()
@@ -136,7 +135,7 @@ pub fn load(app: &str, cli: &Path, cache_dir: &Path, cancel: &AtomicBool) -> Res
     }
     let commands = read(app, cli, cancel).with_context(|| format!("reading {app}'s commands"))?;
     let cat = Catalog {
-        app: app.to_owned(),
+        app,
         version,
         commands,
     };
@@ -146,9 +145,9 @@ pub fn load(app: &str, cli: &Path, cache_dir: &Path, cancel: &AtomicBool) -> Res
     Ok(cat)
 }
 
-fn read(app: &str, cli: &Path, cancel: &AtomicBool) -> Result<Vec<Cmd>> {
+fn read(app: App, cli: &Path, cancel: &AtomicBool) -> Result<Vec<Cmd>> {
     let list: Value = match app {
-        "lightcraft" => lightcraft::query(
+        App::LightCraft => lightcraft::query(
             cli,
             &[("engine.commands", Value::Object(Default::default()))],
             cancel,
@@ -159,7 +158,7 @@ fn read(app: &str, cli: &Path, cancel: &AtomicBool) -> Result<Vec<Cmd>> {
         _ => {
             let mut cmd = Command::new(cli);
             cmd.arg("commands");
-            if app == "photocraft" {
+            if app == App::PhotoCraft {
                 cmd.arg("--json");
             }
             let o = procrun::run(cmd, None, cancel)?;
@@ -195,7 +194,7 @@ mod tests {
     #[test]
     fn prompt_lists_detail_then_ids_and_skips_ui() {
         let c = Catalog {
-            app: "lightcraft".into(),
+            app: App::LightCraft,
             version: "1.0".into(),
             commands: vec![
                 Cmd {

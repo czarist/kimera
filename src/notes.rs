@@ -9,7 +9,8 @@ use crate::engine::{Extras, PhotoExtras};
 use crate::recipe::Step;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -20,8 +21,9 @@ pub struct Note {
     pub text: String,
 }
 
-/// Notes per photo path, as saved by the window or written by hand for `--notes`.
-pub type NotesFile = HashMap<PathBuf, Vec<Note>>;
+/// Notes per photo path, as saved by the window or written by hand for `--notes`. Sorted,
+/// so the saved file keeps a stable order.
+pub type NotesFile = BTreeMap<PathBuf, Vec<Note>>;
 
 /// Colours of note 1, 2, 3… on the photo the AI sees (and in the window).
 pub const COLORS: [[u8; 3]; 6] = [
@@ -32,6 +34,12 @@ pub const COLORS: [[u8; 3]; 6] = [
     [60, 255, 60],
     [255, 140, 0],
 ];
+
+/// Long edge of the marked photo the AI sees: larger than the look, so small objects stay visible.
+const NOTE_PREVIEW_SIZE: u32 = 1280;
+
+/// Points of each loop written into the prompt (the drawing carries the exact shape).
+const LOOP_POINTS: usize = 24;
 
 pub const COLOR_NAMES: [&str; 6] = ["red", "cyan", "yellow", "magenta", "green", "orange"];
 
@@ -167,19 +175,88 @@ How to place things:
 - Do not edit anything outside the circled regions, and never invent text or file paths.
 "#;
 
-/// Asks the AI for the steps of one photo's notes. `size` is the full-size photo in pixels when
-/// known; `system` is the recipe writer's system prompt (cached by the provider).
-#[allow(clippy::too_many_arguments)]
-pub fn plan_photo(
-    client: &Client,
+/// What turning notes into steps needs: the AI, the apps' command lists, LightCraft for
+/// previews, a scratch folder, and the run's cancel flag.
+#[derive(Clone, Copy)]
+pub struct NotesJob<'a> {
+    pub client: &'a Client,
+    pub catalogs: &'a [Catalog],
+    pub lightcraft: &'a Path,
+    pub scratch: &'a Path,
+    pub cancel: &'a AtomicBool,
+}
+
+impl NotesJob<'_> {
+    /// Steps for every photo that has notes (keyed by index in `files`), merged into
+    /// `extras`. A photo whose notes cannot be turned into steps is reported and runs without
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// Only when the run is cancelled.
+    pub fn plan_all(
+        &self,
+        files: &[PathBuf],
+        notes: &HashMap<usize, Vec<Note>>,
+        extras: &mut Extras,
+        progress: &mut dyn FnMut(String),
+    ) -> Result<()> {
+        let system = crate::writer::system_prompt(self.catalogs);
+        let mut ids: Vec<&usize> = notes.keys().collect();
+        ids.sort_unstable();
+        for &i in ids {
+            let (Some(photo), Some(n)) = (files.get(i), notes.get(&i)) else {
+                continue;
+            };
+            if n.is_empty() {
+                continue;
+            }
+            let name = photo
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            progress(format!("Reading your {} note(s) on {name}…", n.len()));
+            match self.plan_photo(&system, photo, n) {
+                Ok(x) => {
+                    progress(format!(
+                        "{name}: {} LightCraft / {} PhotoCraft step(s) from the notes",
+                        x.lightcraft.len(),
+                        x.photocraft.len()
+                    ));
+                    extras.entry(i).or_default().merge(x);
+                }
+                Err(e) if crate::procrun::is_cancelled(&e) => return Err(e),
+                Err(e) => progress(format!("{name}: notes not applied ({e:#})")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Asks the AI for the steps of one photo's notes; `system` is the recipe writer's system
+    /// prompt (cached by the provider).
+    ///
+    /// # Errors
+    ///
+    /// When the preview cannot be made, the AI cannot be reached, or three answers in a row do
+    /// not check out.
+    pub fn plan_photo(&self, system: &str, photo: &Path, notes: &[Note]) -> Result<PhotoExtras> {
+        plan_photo(self, system, photo, notes)
+    }
+}
+
+fn plan_photo(
+    job: &NotesJob<'_>,
     system: &str,
-    catalogs: &[Catalog],
-    lightcraft: &Path,
     photo: &Path,
     notes: &[Note],
-    scratch: &Path,
-    cancel: &AtomicBool,
 ) -> Result<PhotoExtras> {
+    let NotesJob {
+        client,
+        catalogs,
+        lightcraft,
+        scratch,
+        cancel,
+    } = *job;
     if notes.is_empty() {
         return Ok(PhotoExtras::default());
     }
@@ -190,7 +267,7 @@ pub fn plan_photo(
         .unwrap_or_default();
     let prev = scratch.join(format!("note-{stem}-{}.jpg", std::process::id()));
     let over = scratch.join(format!("note-{stem}-{}-marked.jpg", std::process::id()));
-    analysis::preview(lightcraft, photo, &prev, 1280, cancel)?;
+    analysis::preview(lightcraft, photo, &prev, NOTE_PREVIEW_SIZE, cancel)?;
     draw_overlay(&prev, notes, &over)?;
     let size = image::image_dimensions(photo)
         .map(|(w, h)| format!("{w}×{h} px"))
@@ -198,8 +275,9 @@ pub fn plan_photo(
     let mut text = format!("{ASK}\nFull-size photo: {size}.\n\nNotes:\n");
     for (i, n) in notes.iter().enumerate() {
         let b = n.bbox();
-        text.push_str(&format!(
-            "- note-{} ({} loop): \"{}\" — box [{:.3}, {:.3}, {:.3}, {:.3}], loop {:?}\n",
+        let _ = writeln!(
+            text,
+            "- note-{} ({} loop): \"{}\" — box [{:.3}, {:.3}, {:.3}, {:.3}], loop {:?}",
             i + 1,
             COLOR_NAMES[i % COLOR_NAMES.len()],
             n.text.trim(),
@@ -207,8 +285,8 @@ pub fn plan_photo(
             b[1],
             b[2],
             b[3],
-            n.simplified(24)
-        ));
+            n.simplified(LOOP_POINTS)
+        );
     }
     let mut turns = vec![Turn::user(vec![Part::Jpeg(over.clone()), Part::Text(text)])];
     let mut last = String::new();
@@ -243,8 +321,8 @@ fn parse_fragment(reply: &str, catalogs: &[Catalog]) -> Result<PhotoExtras> {
         photocraft: f.photocraft.steps,
     };
     for (app, steps) in [
-        ("lightcraft", &mut out.lightcraft),
-        ("photocraft", &mut out.photocraft),
+        (crate::apps::App::LightCraft, &mut out.lightcraft),
+        (crate::apps::App::PhotoCraft, &mut out.photocraft),
     ] {
         for s in steps.iter_mut() {
             crate::recipe::check_step(s).map_err(|e| anyhow::anyhow!("{app}: {e}"))?;
@@ -265,59 +343,13 @@ fn parse_fragment(reply: &str, catalogs: &[Catalog]) -> Result<PhotoExtras> {
     Ok(out)
 }
 
-/// Steps for every photo that has notes, merged into `extras` (photo index → steps).
-#[allow(clippy::too_many_arguments)]
-pub fn plan_all(
-    client: &Client,
-    catalogs: &[Catalog],
-    lightcraft: &Path,
-    files: &[PathBuf],
-    notes: &HashMap<usize, Vec<Note>>,
-    scratch: &Path,
-    extras: &mut Extras,
-    cancel: &AtomicBool,
-    progress: &mut dyn FnMut(String),
-) -> Result<()> {
-    let system = crate::writer::system_prompt(catalogs);
-    let mut ids: Vec<&usize> = notes.keys().collect();
-    ids.sort();
-    for &i in ids {
-        let (Some(photo), Some(n)) = (files.get(i), notes.get(&i)) else {
-            continue;
-        };
-        if n.is_empty() {
-            continue;
-        }
-        let name = photo
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        progress(format!("Reading your {} note(s) on {name}…", n.len()));
-        match plan_photo(
-            client, &system, catalogs, lightcraft, photo, n, scratch, cancel,
-        ) {
-            Ok(x) => {
-                progress(format!(
-                    "{name}: {} LightCraft / {} PhotoCraft step(s) from the notes",
-                    x.lightcraft.len(),
-                    x.photocraft.len()
-                ));
-                extras.entry(i).or_default().merge(x);
-            }
-            Err(e) if crate::procrun::is_cancelled(&e) => return Err(e),
-            Err(e) => progress(format!("{name}: notes not applied ({e:#})")),
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cat(app: &str, ids: &[&str]) -> Catalog {
+    fn cat(app: crate::apps::App, ids: &[&str]) -> Catalog {
         Catalog {
-            app: app.into(),
+            app,
             version: "1".into(),
             commands: ids
                 .iter()
@@ -332,7 +364,7 @@ mod tests {
 
     #[test]
     fn fragment_steps_become_optional_and_checked() -> Result<()> {
-        let cats = [cat("lightcraft", &["spot.add", "mask.add"])];
+        let cats = [cat(crate::apps::App::LightCraft, &["spot.add", "mask.add"])];
         let reply = "Vou remover a placa.\n```toml\n[lightcraft]\nsteps = [{ cmd = \"spot.add\", params = { mode = \"fill\", points = [[0.4, 0.6]] } }]\n```";
         let x = parse_fragment(reply, &cats)?;
         assert_eq!(x.lightcraft.len(), 1);

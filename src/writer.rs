@@ -7,6 +7,7 @@ use crate::catalog::{self, Catalog};
 use crate::recipe::{self, Recipe};
 use anyhow::{Result, bail};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
@@ -163,9 +164,10 @@ pub fn write(
     let system = system_prompt(catalogs);
     let mut first = format!("{}\n{context}\n\nRequest: {request}", describe(photos));
     if let Some(p) = previous {
-        first.push_str(&format!(
+        let _ = write!(
+            first,
             "\n\nChange this recipe rather than starting over:\n```toml\n{p}\n```"
-        ));
+        );
     }
     let mut turns = vec![Turn::user(vec![Part::Text(first)])];
     let mut last_err = String::new();
@@ -215,7 +217,7 @@ mod tests {
     #[test]
     fn unknown_ids_are_refused() -> Result<()> {
         let cats = [Catalog {
-            app: "lightcraft".into(),
+            app: crate::apps::App::LightCraft,
             version: "1".into(),
             commands: vec![Cmd {
                 id: "mask.add".into(),
@@ -244,7 +246,7 @@ mod tests {
     #[test]
     fn system_prompt_carries_playbook_and_lists() {
         let cats = [Catalog {
-            app: "photocraft".into(),
+            app: crate::apps::App::PhotoCraft,
             version: "2".into(),
             commands: vec![],
         }];

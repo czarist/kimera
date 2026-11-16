@@ -9,6 +9,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 
+/// Long edge of a grid thumbnail, in pixels.
+const THUMB_SIZE: u32 = 320;
+
 const DIRECT: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "webp"];
 
 pub struct Queue {
@@ -65,7 +68,7 @@ impl Queue {
                 .lock()
                 .map(|g| g.clone())
                 .unwrap_or_default();
-            let img = load_rgba(&next, &lc, 320);
+            let img = load_rgba(&next, &lc, THUMB_SIZE);
             if tx.send(Msg::Thumb(next, img)).is_err() {
                 return;
             }

@@ -23,6 +23,9 @@ JSON only, no prose, in exactly this shape:
 Coordinates are fractions of the image width and height. List red_eye only for pupils that are
 clearly red from a flash. When unsure about a blink, say false."#;
 
+/// Long edge of the preview the AI looks at: enough to see eyes, small enough to send fast.
+const LOOK_SIZE: u32 = 1024;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Report {
@@ -97,7 +100,7 @@ pub fn analyse(
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let jpg = scratch.join(format!("look-{stem}-{}.jpg", std::process::id()));
-    preview(lightcraft, photo, &jpg, 1024, cancel)?;
+    preview(lightcraft, photo, &jpg, LOOK_SIZE, cancel)?;
     let reply = client.ask(
         PROMPT,
         &[Turn::user(vec![
