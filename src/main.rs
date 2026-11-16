@@ -47,6 +47,9 @@ enum Cmd {
         /// Let the AI look at each photo first (red eyes, closed eyes)
         #[arg(long)]
         analyse: bool,
+        /// Notes per photo: a JSON file {"photo path": [{"points": [[x, y], …], "text": "…"}]}
+        #[arg(long)]
+        notes: Option<PathBuf>,
         /// Photo files or folders (a folder gives its top-level images)
         #[arg(required = true)]
         paths: Vec<PathBuf>,
@@ -70,6 +73,9 @@ enum Cmd {
         /// With --run: let the AI look at each photo first
         #[arg(long)]
         analyse: bool,
+        /// Notes per photo: a JSON file {"photo path": [{"points": [[x, y], …], "text": "…"}]}
+        #[arg(long)]
+        notes: Option<PathBuf>,
     },
     /// Let the AI look at photos: faces, closed eyes, red eyes
     Analyse {
@@ -153,15 +159,12 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Run {
             recipe,
             analyse,
+            notes,
             paths,
         } => {
-            let r = recipe::load(&recipe)?;
+            let mut r = recipe::load(&recipe)?;
             let files = photos(&paths)?;
-            let extras = if analyse {
-                look(&cfg, &files, &cancel)?
-            } else {
-                Extras::new()
-            };
+            let extras = extras_for(&cfg, &files, analyse, notes.as_deref(), &mut r, &cancel)?;
             stages(
                 &cfg,
                 &r,
@@ -179,7 +182,17 @@ fn run(cli: Cli) -> Result<()> {
             save,
             run,
             analyse,
-        } => ask(&cfg, &request, &paths, from, save, run, analyse, &cancel),
+            notes,
+        } => ask(
+            &cfg,
+            &request,
+            &paths,
+            from,
+            save,
+            run,
+            (analyse, notes),
+            &cancel,
+        ),
         Cmd::Analyse { paths } => look(&cfg, &photos(&paths)?, &cancel).map(|_| ()),
         Cmd::Pipeline {
             recipe,
@@ -288,7 +301,7 @@ fn ask(
     from: Option<PathBuf>,
     save: Option<PathBuf>,
     run: bool,
-    analyse: bool,
+    (analyse, notes): (bool, Option<PathBuf>),
     cancel: &AtomicBool,
 ) -> Result<()> {
     let files = photos(paths)?;
@@ -304,7 +317,7 @@ fn ask(
     let context = status::Models::read(cfg, cancel)
         .map(|m| m.describe())
         .unwrap_or_default();
-    let draft = writer::write(
+    let mut draft = writer::write(
         &kimera::ai_client(cfg),
         &cats,
         request,
@@ -342,11 +355,14 @@ fn ask(
         );
         return Ok(());
     }
-    let extras = if analyse {
-        look(cfg, &files, cancel)?
-    } else {
-        Extras::new()
-    };
+    let extras = extras_for(
+        cfg,
+        &files,
+        analyse,
+        notes.as_deref(),
+        &mut draft.recipe,
+        cancel,
+    )?;
     stages(
         cfg,
         &draft.recipe,
@@ -415,9 +431,81 @@ fn look(cfg: &config::Config, files: &[PathBuf], cancel: &AtomicBool) -> Result<
     Ok(reports
         .into_iter()
         .enumerate()
-        .filter_map(|(i, r)| r.map(|r| (i, r.extra_steps())))
-        .filter(|(_, s)| !s.is_empty())
+        .filter_map(|(i, r)| {
+            r.map(|r| {
+                (
+                    i,
+                    engine::PhotoExtras {
+                        lightcraft: r.extra_steps(),
+                        photocraft: Vec::new(),
+                    },
+                )
+            })
+        })
+        .filter(|(_, x)| !x.is_empty())
         .collect())
+}
+
+/// Per-photo steps from the AI's look (`analyse`) and from the user's notes file, and the
+/// stages they need added to the recipe.
+fn extras_for(
+    cfg: &config::Config,
+    files: &[PathBuf],
+    analyse: bool,
+    notes: Option<&Path>,
+    r: &mut Recipe,
+    cancel: &AtomicBool,
+) -> Result<Extras> {
+    let mut extras = if analyse {
+        look(cfg, files, cancel)?
+    } else {
+        Extras::new()
+    };
+    if let Some(path) = notes {
+        let file = kimera::notes::load(path)?;
+        let by_index = notes_by_index(files, &file);
+        if by_index.is_empty() {
+            println!("No photo of this run has notes in {}", path.display());
+        } else {
+            let cats = kimera::catalogs(cfg, cancel)?;
+            kimera::notes::plan_all(
+                &kimera::ai_client(cfg),
+                &cats,
+                &cfg.lightcraft.cli,
+                files,
+                &by_index,
+                &cfg.work.dir.join(".kimera").join("notes-look"),
+                &mut extras,
+                cancel,
+                &mut |l| println!("{l}"),
+            )?;
+        }
+    }
+    for app in engine::ensure_apps(r, &extras, files) {
+        println!("Turned {app} on for the per-photo steps (the recipe did not use it)");
+    }
+    Ok(extras)
+}
+
+/// Notes keyed by photo index: the same path, or the same file name when that is unique.
+fn notes_by_index(
+    files: &[PathBuf],
+    file: &kimera::notes::NotesFile,
+) -> std::collections::HashMap<usize, Vec<kimera::notes::Note>> {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    let mut out = std::collections::HashMap::new();
+    for (path, notes) in file {
+        let hit = files.iter().position(|f| f == path).or_else(|| {
+            let same: Vec<usize> = (0..files.len())
+                .filter(|&i| files.get(i).and_then(|f| name(f)) == name(path))
+                .collect();
+            (same.len() == 1).then(|| same.first().copied()).flatten()
+        });
+        if let Some(i) = hit {
+            out.insert(i, notes.clone());
+        }
+    }
+    out
 }
 
 fn pipeline(

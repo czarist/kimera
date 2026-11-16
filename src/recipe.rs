@@ -80,6 +80,20 @@ impl Recipe {
             .collect()
     }
 
+    /// The apps this recipe turns on, in Craft order; the others stay off.
+    pub fn apps_used(&self) -> Vec<&'static str> {
+        let used: Vec<&'static str> = self
+            .stages
+            .iter()
+            .chain(self.variants.iter().flat_map(|v| &v.stages))
+            .map(Stage::app)
+            .collect();
+        ["lightcraft", "photocraft", "vectorcraft"]
+            .into_iter()
+            .filter(|a| used.contains(a))
+            .collect()
+    }
+
     /// Every command id the recipe uses, with its app.
     pub fn commands(&self) -> Vec<(&'static str, &str)> {
         self.stages
@@ -273,7 +287,7 @@ impl FileExport {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Step {
     /// An engine command id of the stage's app (`<app>-cli commands`).
     pub cmd: String,
@@ -377,6 +391,20 @@ fn validate(r: &Recipe) -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// One step on its own (per-photo steps from notes or analysis): a real-looking command id
+/// and table params.
+pub fn check_step(s: &Step) -> Result<()> {
+    if !is_command_id(&s.cmd) {
+        bail!("{:?} is not a command id", s.cmd);
+    }
+    if let Some(p) = &s.params
+        && !p.is_table()
+    {
+        bail!("params of {} must be a table", s.cmd);
     }
     Ok(())
 }

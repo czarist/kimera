@@ -1,12 +1,6 @@
 # Clean-up and cinematic grade: blemishes, teal & orange, darker background, vignette.
-# PhotoCraft prepares a 16-bit TIFF, then LightCraft retouches and grades with masks.
-# Originals are never touched; each stage writes into its own folder of the run.
-
-[[stage]]
-app = "photocraft"
-out_ext = "tif"
-# Pixel work goes here (object removal, cut-outs). This recipe only converts.
-steps = []
+# LightCraft only: nothing here needs PhotoCraft's pixel tools, so PhotoCraft stays off.
+# Originals are never touched; the run writes into its own folder.
 
 [[stage]]
 app = "lightcraft"

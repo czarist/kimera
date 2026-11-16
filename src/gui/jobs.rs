@@ -3,9 +3,11 @@
 use crate::analysis::{self, Report};
 use crate::config::Config;
 use crate::engine::{self, Event, Extras};
+use crate::notes::Note;
 use crate::status::{self, Check, Models};
 use crate::{recipe, writer};
 use eframe::egui::{ColorImage, Context};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +18,8 @@ pub enum Msg {
     Thumb(PathBuf, Option<ColorImage>),
     Draft(Result<(String, String), String>),
     RunDir(PathBuf),
+    /// The stages the run really has (an app may have been turned on for notes).
+    Plan(Vec<engine::Slot>),
     /// Photo index in the window's list.
     Analysed(usize, Result<Report, String>),
     /// Engine event; the slice maps the run's photo numbers to the window's list.
@@ -110,6 +114,8 @@ pub struct RunJob {
     /// Window index of each file.
     pub index: Vec<usize>,
     pub analyse: bool,
+    /// The user's notes, keyed by position in `files`.
+    pub notes: HashMap<usize, Vec<Note>>,
     pub test: bool,
     pub cancel: Arc<AtomicBool>,
     pub tx: Sender<Msg>,
@@ -132,7 +138,7 @@ pub fn run(job: RunJob) {
 }
 
 fn run_inner(job: &RunJob) -> anyhow::Result<String> {
-    let r = recipe::parse(&job.recipe_text)?;
+    let mut r = recipe::parse(&job.recipe_text)?;
     let cfg = &job.cfg;
     if let Some(m) = Models::read(cfg, &job.cancel) {
         let missing = m.missing_for(&r);
@@ -163,7 +169,7 @@ fn run_inner(job: &RunJob) -> anyhow::Result<String> {
             if let Ok(rep) = &rep {
                 let steps = rep.extra_steps();
                 if !steps.is_empty() {
-                    extras.insert(i, steps);
+                    extras.entry(i).or_default().lightcraft.extend(steps);
                 }
             }
             reports.push(rep.as_ref().ok().cloned());
@@ -194,6 +200,32 @@ fn run_inner(job: &RunJob) -> anyhow::Result<String> {
             };
             send(&job.tx, &job.ctx, Msg::Log(line));
         }
+    }
+    if !job.notes.is_empty() {
+        let cats = crate::catalogs(cfg, &job.cancel)?;
+        crate::notes::plan_all(
+            &crate::ai_client(cfg),
+            &cats,
+            &cfg.lightcraft.cli,
+            &job.files,
+            &job.notes,
+            &cfg.work.dir.join(".kimera").join("notes-look"),
+            &mut extras,
+            &job.cancel,
+            &mut |l| send(&job.tx, &job.ctx, Msg::Log(l)),
+        )?;
+    }
+    let added = engine::ensure_apps(&mut r, &extras, &job.files);
+    if !added.is_empty() {
+        send(
+            &job.tx,
+            &job.ctx,
+            Msg::Log(format!(
+                "Turned {} on for the per-photo steps",
+                added.join(" and ")
+            )),
+        );
+        send(&job.tx, &job.ctx, Msg::Plan(engine::plan(&r)));
     }
     let index: Arc<[usize]> = job.index.clone().into();
     let sum = engine::run(

@@ -17,6 +17,7 @@ pub mod catalog;
 pub mod config;
 pub mod engine;
 pub mod gui;
+pub mod notes;
 pub mod procrun;
 pub mod recipe;
 pub mod status;

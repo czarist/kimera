@@ -48,6 +48,12 @@ export = { format = "jpg", long_edge = 1920 }
 ```
 
 Rules:
+- Turn on only the apps the request needs; the others stay off. Most colour, retouch, mask,
+  crop and export work is LightCraft alone. Add PhotoCraft only for its pixel tools (object
+  removal it does better, cut-outs, white backgrounds, canvas, text, placed images, liquify) and
+  VectorCraft only for layouts. Never add a stage without steps just to convert a file, except
+  a LightCraft stage whose export is the point (resize, watermark, format).
+- Say in the notes which apps the recipe uses.
 - Use only command ids from the lists below, with the parameters they document.
 - `optional = "<group>"` on every step of a group that may find nothing on some photos (prompt or
   object masks, select.subject, removeBackground…): if one step of the group fails, Kimera
@@ -112,8 +118,22 @@ pub fn split(reply: &str) -> (String, Option<String>) {
     (notes.trim().to_owned(), Some(body[..end].trim().to_owned()))
 }
 
-/// Every command id the recipe uses must exist in its app's list.
+/// Every command id the recipe uses must exist in its app's list, and every app the recipe
+/// turns on must do something: a PhotoCraft stage without steps only converts the file, so it
+/// is refused (LightCraft can export any format itself).
 pub fn check(r: &Recipe, catalogs: &[Catalog]) -> Result<()> {
+    for (name, chain) in r.chains() {
+        if let Some(i) = chain
+            .iter()
+            .position(|s| matches!(s, crate::recipe::Stage::Photocraft(_)) && s.steps().is_empty())
+        {
+            bail!(
+                "{}stage {} turns PhotoCraft on without steps: leave PhotoCraft off",
+                name.map(|v| format!("variant {v}, ")).unwrap_or_default(),
+                i + 1
+            );
+        }
+    }
     let mut unknown = Vec::new();
     for (app, cmd) in r.commands() {
         if let Some(c) = catalogs.iter().find(|c| c.app == app)

@@ -84,9 +84,67 @@ pub struct Summary {
     pub cancelled: bool,
 }
 
-/// Extra steps for one photo (from the AI analysis), run at the start of the first LightCraft
-/// stage of each chain, as the optional group `analysis`.
-pub type Extras = HashMap<usize, Vec<Step>>;
+/// Extra steps for one photo (the AI's look, the user's notes), run at the start of the first
+/// stage of that app in each chain. They should be in optional groups.
+#[derive(Debug, Clone, Default)]
+pub struct PhotoExtras {
+    pub lightcraft: Vec<Step>,
+    pub photocraft: Vec<Step>,
+}
+
+impl PhotoExtras {
+    pub fn merge(&mut self, other: PhotoExtras) {
+        self.lightcraft.extend(other.lightcraft);
+        self.photocraft.extend(other.photocraft);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lightcraft.is_empty() && self.photocraft.is_empty()
+    }
+}
+
+/// Photo index → its extra steps.
+pub type Extras = HashMap<usize, PhotoExtras>;
+
+/// Adds the stages per-photo extras need when the recipe has none of that app: a LightCraft
+/// stage (16-bit TIFF) or a PhotoCraft stage (TIFF) at the start, LightCraft first when raw
+/// photos need developing before PhotoCraft. Returns what was added, for the log.
+pub fn ensure_apps(recipe: &mut Recipe, extras: &Extras, photos: &[PathBuf]) -> Vec<&'static str> {
+    use crate::recipe::{FileExport, LightCraftStage, PhotoCraftStage};
+    let all: Vec<&Stage> = slot_stages(recipe);
+    let has_lc = all.iter().any(|s| matches!(s, Stage::Lightcraft(_)));
+    let has_pc = all.iter().any(|s| matches!(s, Stage::Photocraft(_)));
+    let need_lc = extras.values().any(|x| !x.lightcraft.is_empty()) && !has_lc;
+    let need_pc = extras.values().any(|x| !x.photocraft.is_empty()) && !has_pc;
+    let lc = || {
+        Stage::Lightcraft(LightCraftStage {
+            steps: Vec::new(),
+            export: FileExport {
+                format: "tif".into(),
+                bit_depth: Some(16),
+                ..FileExport::default()
+            },
+        })
+    };
+    let mut added = Vec::new();
+    let mut front: Vec<Stage> = Vec::new();
+    if need_lc || (need_pc && photos.iter().any(|p| is_raw(p)) && !has_lc) {
+        front.push(lc());
+        added.push("lightcraft");
+    }
+    if need_pc {
+        front.push(Stage::Photocraft(PhotoCraftStage {
+            out_ext: "tif".into(),
+            steps: Vec::new(),
+        }));
+        added.push("photocraft");
+    }
+    if !front.is_empty() {
+        front.append(&mut recipe.stages);
+        recipe.stages = front;
+    }
+    added
+}
 
 /// Image files from `paths`: files as given, folders expanded (sorted), duplicates dropped.
 pub fn collect(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
@@ -205,22 +263,25 @@ fn chains(recipe: &Recipe) -> (Vec<usize>, Vec<Vec<usize>>) {
     (shared, variants)
 }
 
-/// Slots that are the first LightCraft stage of some chain (where analysis extras go).
-fn first_lightcraft(recipe: &Recipe) -> HashSet<usize> {
+/// Slots that are the first stage of their app in some chain (where per-photo extras go).
+fn first_slots(recipe: &Recipe) -> HashSet<usize> {
     let stages = slot_stages(recipe);
     let (shared, variants) = chains(recipe);
     let mut out = HashSet::new();
-    let first_in = |ids: &[usize]| {
-        ids.iter().copied().find(|i| {
-            stages
-                .get(*i)
-                .is_some_and(|s| matches!(s, Stage::Lightcraft(_)))
-        })
-    };
-    if let Some(i) = first_in(&shared) {
-        out.insert(i);
-    } else {
-        out.extend(variants.iter().filter_map(|v| first_in(v)));
+    for is_app in [
+        (|s: &Stage| matches!(s, Stage::Lightcraft(_))) as fn(&Stage) -> bool,
+        |s: &Stage| matches!(s, Stage::Photocraft(_)),
+    ] {
+        let first_in = |ids: &[usize]| {
+            ids.iter()
+                .copied()
+                .find(|i| stages.get(*i).is_some_and(|s| is_app(s)))
+        };
+        if let Some(i) = first_in(&shared) {
+            out.insert(i);
+        } else {
+            out.extend(variants.iter().filter_map(|v| first_in(v)));
+        }
     }
     out
 }
@@ -256,7 +317,7 @@ pub fn run(
         apps,
         stages: slot_stages(recipe),
         dirs,
-        extras_at: first_lightcraft(recipe),
+        extras_at: first_slots(recipe),
         extras,
         cancel,
     };
@@ -365,10 +426,13 @@ fn run_stage(
     sum: &mut Summary,
     on: &mut dyn FnMut(Event),
 ) -> Result<()> {
-    let extra: &[Step] = if cx.extras_at.contains(&slot) {
-        cx.extras.get(&photo).map(Vec::as_slice).unwrap_or(&[])
-    } else {
-        &[]
+    let extra: &[Step] = match (cx.extras_at.contains(&slot), cx.extras.get(&photo)) {
+        (true, Some(x)) => match stage {
+            Stage::Lightcraft(_) => &x.lightcraft,
+            Stage::Photocraft(_) => &x.photocraft,
+            Stage::Vectorcraft(_) => &[],
+        },
+        _ => &[],
     };
     let mut skip: HashSet<String> = HashSet::new();
     loop {
@@ -449,9 +513,9 @@ mod tests {
         let (shared, variants) = chains(&r);
         assert_eq!(shared, [0]);
         assert_eq!(variants, [vec![1], vec![2]]);
-        let mut first: Vec<usize> = first_lightcraft(&r).into_iter().collect();
+        let mut first: Vec<usize> = first_slots(&r).into_iter().collect();
         first.sort();
-        assert_eq!(first, [1, 2]);
+        assert_eq!(first, [0, 1, 2]); // PhotoCraft in the shared part, LightCraft in each variant
         Ok(())
     }
 
@@ -459,8 +523,53 @@ mod tests {
     fn bundled_recipe_plan() -> Result<()> {
         let r = crate::recipe::parse(include_str!("../recipes/cleanup-cinematic.toml"))?;
         let dirs: Vec<String> = plan(&r).into_iter().map(|s| s.dir).collect();
+        assert_eq!(dirs, ["1-lightcraft"]);
+        assert_eq!(first_slots(&r).into_iter().collect::<Vec<_>>(), [0]);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_apps_are_added_only_when_extras_need_them() -> Result<()> {
+        let lc_only = "[[stage]]\napp = \"lightcraft\"\n";
+        let step = || Step {
+            cmd: "x.y".into(),
+            params: None,
+            optional: Some("n".into()),
+        };
+        let jpg = [PathBuf::from("a.jpg")];
+
+        // LightCraft extras on a LightCraft recipe: nothing to add.
+        let mut r = crate::recipe::parse(lc_only)?;
+        let ex: Extras = [(
+            0,
+            PhotoExtras {
+                lightcraft: vec![step()],
+                photocraft: vec![],
+            },
+        )]
+        .into();
+        assert!(ensure_apps(&mut r, &ex, &jpg).is_empty());
+
+        // PhotoCraft extras: a PhotoCraft stage goes first, the recipe's output stays the same.
+        let ex: Extras = [(
+            0,
+            PhotoExtras {
+                lightcraft: vec![],
+                photocraft: vec![step()],
+            },
+        )]
+        .into();
+        assert_eq!(ensure_apps(&mut r, &ex, &jpg), ["photocraft"]);
+        let dirs: Vec<String> = plan(&r).into_iter().map(|s| s.dir).collect();
         assert_eq!(dirs, ["1-photocraft", "2-lightcraft"]);
-        assert_eq!(first_lightcraft(&r).into_iter().collect::<Vec<_>>(), [1]);
+        assert_eq!(first_slots(&r).len(), 2);
+
+        // Raw photo + PhotoCraft extras on a recipe without LightCraft: develop first.
+        let mut r = crate::recipe::parse("[[stage]]\napp = \"vectorcraft\"\n")?;
+        assert_eq!(
+            ensure_apps(&mut r, &ex, &[PathBuf::from("a.cr3")]),
+            ["lightcraft", "photocraft"]
+        );
         Ok(())
     }
 

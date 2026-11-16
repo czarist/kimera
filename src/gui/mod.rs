@@ -7,6 +7,7 @@ mod thumbs;
 use crate::analysis::Report;
 use crate::config::{self, Config, Provider};
 use crate::engine::{self, Slot};
+use crate::notes::{self, Note};
 use crate::recipe;
 use crate::status::{Check, Level};
 use eframe::egui::{self, Color32, RichText, TextureHandle, Vec2};
@@ -58,6 +59,8 @@ struct Photo {
     report: Option<Report>,
     outs: Vec<PathBuf>,
     skipped: Vec<String>,
+    /// Circled areas with what to do there.
+    notes: Vec<Note>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -96,6 +99,18 @@ pub struct App {
     run_dir: Option<PathBuf>,
     log: Vec<String>,
     compare: Option<(TextureHandle, Option<TextureHandle>, String)>,
+    /// The photo whose result the before / after shows.
+    tested: Option<usize>,
+
+    /// Note editor: the photo open in it, its large picture, the loop being drawn, a closed
+    /// loop waiting for its text.
+    annotating: Option<usize>,
+    big: Option<(PathBuf, TextureHandle)>,
+    stroke: Vec<[f32; 2]>,
+    pending: Option<Vec<[f32; 2]>>,
+    note_text: String,
+    /// Put the cursor in the note box once, when a loop closes.
+    focus_note: bool,
 }
 
 impl App {
@@ -136,6 +151,13 @@ impl App {
             run_dir: None,
             log: Vec::new(),
             compare: None,
+            tested: None,
+            annotating: None,
+            big: None,
+            stroke: Vec::new(),
+            pending: None,
+            note_text: String::new(),
+            focus_note: false,
         };
         app.start_checks();
         // `kimera-gui <folder>`: "Open with" or a folder dropped on the program.
@@ -184,12 +206,29 @@ impl App {
                         report: None,
                         outs: Vec::new(),
                         skipped: Vec::new(),
+                        notes: Vec::new(),
                     })
                     .collect();
                 self.thumb_queue
                     .reset(self.photos.iter().map(|p| p.path.clone()).collect());
                 let n = self.photos.len();
                 self.say(format!("{n} photo(s) in {}", dir.display()));
+                // Notes made earlier on this folder (kept in the work folder).
+                let store = notes::store_for(&self.cfg.work.dir, &dir);
+                if let Ok(saved) = notes::load(&store) {
+                    let mut count = 0usize;
+                    for p in &mut self.photos {
+                        if let Some(n) = saved.get(&p.path) {
+                            p.notes = n.clone();
+                            count += n.len();
+                        }
+                    }
+                    if count > 0 {
+                        self.say(format!("{count} note(s) from before on this folder"));
+                    }
+                }
+                self.annotating = None;
+                self.big = None;
                 self.folder = Some(dir);
             }
             Err(e) => self.say(format!("Cannot open the folder: {e:#}")),
@@ -215,11 +254,22 @@ impl App {
             .filter(|(_, p)| p.selected)
             .map(|(i, _)| i)
             .collect();
+        // A test runs on the photo being annotated, else the first selected one with notes,
+        // else the first selected one.
         let picked: Vec<usize> = if test {
-            picked.into_iter().take(1).collect()
+            let with_notes = picked
+                .iter()
+                .copied()
+                .find(|&i| self.photos.get(i).is_some_and(|p| !p.notes.is_empty()));
+            self.annotating
+                .or(with_notes)
+                .or(picked.first().copied())
+                .into_iter()
+                .collect()
         } else {
             picked
         };
+        self.tested = picked.first().copied();
         if picked.is_empty() {
             self.say("Select at least one photo.");
             return;
@@ -252,8 +302,18 @@ impl App {
             cfg: self.cfg.clone(),
             recipe_text: self.recipe_text.clone(),
             files,
-            index: picked,
+            index: picked.clone(),
             analyse: self.analyse_first,
+            notes: picked
+                .iter()
+                .enumerate()
+                .filter_map(|(k, &i)| {
+                    self.photos
+                        .get(i)
+                        .filter(|p| !p.notes.is_empty())
+                        .map(|p| (k, p.notes.clone()))
+                })
+                .collect(),
             test,
             cancel: self.cancel.clone(),
             tx: self.tx.clone(),
@@ -297,6 +357,8 @@ impl App {
                 }
             }
             Msg::RunDir(d) => self.run_dir = Some(d),
+            // The run turned an app on for per-photo steps: the board follows the real stages.
+            Msg::Plan(p) => self.plan = p,
             Msg::Analysed(i, r) => {
                 let name = self
                     .photos
@@ -336,6 +398,8 @@ impl App {
                     }
                 }
                 if test {
+                    // Show before / after even when the test started from the note editor.
+                    self.annotating = None;
                     self.load_compare();
                 }
             }
@@ -419,7 +483,7 @@ impl App {
 
     /// Before/after of the tested photo.
     fn load_compare(&mut self) {
-        let Some(p) = self.photos.iter().find(|p| p.selected) else {
+        let Some(p) = self.tested.and_then(|i| self.photos.get(i)) else {
             return;
         };
         let before = thumbs::load_rgba(&p.path, &self.cfg.lightcraft.cli, 1400);
@@ -733,6 +797,21 @@ impl App {
                 Ok(r) => {
                     let flow: Vec<String> = engine::plan(&r).iter().map(|s| s.dir.clone()).collect();
                     ui.colored_label(Color32::from_rgb(80, 180, 110), format!("✔ {}", flow.join(" → ")));
+                    // Which apps this recipe turns on; the others stay off.
+                    let used = r.apps_used();
+                    ui.horizontal(|ui| {
+                        for (app, label) in [
+                            ("lightcraft", "LightCraft"),
+                            ("photocraft", "PhotoCraft"),
+                            ("vectorcraft", "VectorCraft"),
+                        ] {
+                            if used.contains(&app) {
+                                ui.colored_label(Color32::from_rgb(80, 180, 110), format!("● {label} on"));
+                            } else {
+                                ui.label(RichText::new(format!("○ {label} off")).weak());
+                            }
+                        }
+                    });
                 }
                 Err(e) => {
                     ui.colored_label(Color32::from_rgb(220, 80, 70), format!("✖ {e}"));
@@ -798,9 +877,207 @@ impl App {
         ui.separator();
     }
 
+    /// Saves every photo's notes for this folder (in the work folder).
+    fn save_notes(&mut self) {
+        let Some(folder) = &self.folder else { return };
+        let all: notes::NotesFile = self
+            .photos
+            .iter()
+            .filter(|p| !p.notes.is_empty())
+            .map(|p| (p.path.clone(), p.notes.clone()))
+            .collect();
+        if let Err(e) = notes::save(&notes::store_for(&self.cfg.work.dir, folder), &all) {
+            self.say(format!("Could not save the notes: {e:#}"));
+        }
+    }
+
+    /// One photo, large: drag to circle an area, then say what should happen there.
+    fn annotate(&mut self, ui: &mut egui::Ui, idx: usize) {
+        let Some(path) = self.photos.get(idx).map(|p| p.path.clone()) else {
+            self.annotating = None;
+            return;
+        };
+        if self.big.as_ref().is_none_or(|(p, _)| *p != path) {
+            match thumbs::load_rgba(&path, &self.cfg.lightcraft.cli, 1600) {
+                Some(img) => {
+                    let t = self
+                        .ctx
+                        .load_texture("note-photo", img, egui::TextureOptions::LINEAR);
+                    self.big = Some((path.clone(), t));
+                }
+                None => {
+                    self.say(format!("Cannot show {} for notes.", path.display()));
+                    self.annotating = None;
+                    return;
+                }
+            }
+        }
+        let Some((_, tex)) = self.big.clone() else {
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.heading(format!("Notes on {}", file_name(&path)));
+            if ui.button("Done").clicked() {
+                self.annotating = None;
+                self.pending = None;
+                self.stroke.clear();
+            }
+            ui.label(
+                RichText::new(
+                    "Drag on the photo to circle an area, then say what should happen there.",
+                )
+                .weak(),
+            );
+        });
+        // Picture, fitted above the notes list.
+        let [w, h] = tex.size();
+        let room = Vec2::new(
+            ui.available_width(),
+            (ui.available_height() - 190.0).max(200.0),
+        );
+        let scale = (room.x / w.max(1) as f32).min(room.y / h.max(1) as f32);
+        let size = Vec2::new(w as f32 * scale, h as f32 * scale);
+        let resp = ui.add(
+            egui::Image::new(&tex)
+                .fit_to_exact_size(size)
+                .sense(egui::Sense::drag()),
+        );
+        let rect = resp.rect;
+        let norm = |p: egui::Pos2| {
+            [
+                ((p.x - rect.min.x) / rect.width()).clamp(0.0, 1.0),
+                ((p.y - rect.min.y) / rect.height()).clamp(0.0, 1.0),
+            ]
+        };
+        if resp.drag_started() {
+            self.stroke.clear();
+            self.pending = None;
+        }
+        if resp.dragged()
+            && let Some(p) = resp.interact_pointer_pos()
+        {
+            let n = norm(p);
+            if self
+                .stroke
+                .last()
+                .is_none_or(|l| (l[0] - n[0]).abs() + (l[1] - n[1]).abs() > 0.002)
+            {
+                self.stroke.push(n);
+            }
+        }
+        if resp.drag_stopped() {
+            if self.stroke.len() >= 3 {
+                self.pending = Some(std::mem::take(&mut self.stroke));
+                self.focus_note = true;
+                self.note_text.clear();
+            } else {
+                self.stroke.clear();
+            }
+        }
+        let to_screen = |p: &[f32; 2]| {
+            egui::pos2(
+                rect.min.x + p[0] * rect.width(),
+                rect.min.y + p[1] * rect.height(),
+            )
+        };
+        let painter = ui.painter_at(rect);
+        let photo_notes = self
+            .photos
+            .get(idx)
+            .map(|p| p.notes.clone())
+            .unwrap_or_default();
+        let color = |i: usize| {
+            let [r, g, b] = notes::COLORS[i % notes::COLORS.len()];
+            Color32::from_rgb(r, g, b)
+        };
+        for (i, n) in photo_notes.iter().enumerate() {
+            let pts: Vec<egui::Pos2> = n.points.iter().map(to_screen).collect();
+            painter.add(egui::Shape::closed_line(
+                pts.clone(),
+                egui::Stroke::new(3.0, color(i)),
+            ));
+            if let Some(p) = pts.first() {
+                painter.text(
+                    *p,
+                    egui::Align2::CENTER_CENTER,
+                    format!("{}", i + 1),
+                    egui::FontId::proportional(20.0),
+                    color(i),
+                );
+            }
+        }
+        let next = color(photo_notes.len());
+        if !self.stroke.is_empty() {
+            let pts: Vec<egui::Pos2> = self.stroke.iter().map(to_screen).collect();
+            painter.add(egui::Shape::line(pts, egui::Stroke::new(3.0, next)));
+        }
+        if let Some(pend) = &self.pending {
+            let pts: Vec<egui::Pos2> = pend.iter().map(to_screen).collect();
+            painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(3.0, next)));
+        }
+        // The loop waiting for its text.
+        if self.pending.is_some() {
+            ui.horizontal(|ui| {
+                ui.colored_label(next, format!("Note {}:", photo_notes.len() + 1));
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut self.note_text)
+                        .desired_width(ui.available_width() - 160.0)
+                        .hint_text(
+                            "e.g. remove this sign · brighten her face · blur the background here",
+                        ),
+                );
+                if std::mem::take(&mut self.focus_note) {
+                    edit.request_focus();
+                }
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let ok = !self.note_text.trim().is_empty();
+                if (ui.add_enabled(ok, egui::Button::new("Add")).clicked() || (enter && ok))
+                    && let Some(points) = self.pending.take()
+                {
+                    let text = std::mem::take(&mut self.note_text).trim().to_owned();
+                    if let Some(p) = self.photos.get_mut(idx) {
+                        p.notes.push(Note { points, text });
+                        p.selected = true;
+                    }
+                    self.save_notes();
+                }
+                if ui.button("Discard").clicked() {
+                    self.pending = None;
+                }
+            });
+        }
+        let mut remove = None;
+        egui::ScrollArea::vertical().id_salt("note-list").show(ui, |ui| {
+            for (i, n) in photo_notes.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.colored_label(color(i), format!("{} ·", i + 1));
+                    ui.label(&n.text);
+                    if ui.small_button("Delete").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if photo_notes.is_empty() && self.pending.is_none() {
+                ui.label(RichText::new("No notes yet. They are applied when this photo runs, on top of the recipe.").weak());
+            }
+        });
+        if let Some(i) = remove
+            && let Some(p) = self.photos.get_mut(idx)
+        {
+            if i < p.notes.len() {
+                p.notes.remove(i);
+            }
+            self.save_notes();
+        }
+    }
+
     fn right(&mut self, ui: &mut egui::Ui) {
         if !self.photos.is_empty() {
             self.run_bar(ui);
+        }
+        if let Some(i) = self.annotating {
+            self.annotate(ui, i);
+            return;
         }
         if let Some((before, after, label)) = &self.compare {
             let (before, after, label) = (before.clone(), after.clone(), label.clone());
@@ -840,10 +1117,12 @@ impl App {
 
     fn grid(&mut self, ui: &mut egui::Ui) {
         let per_row = ((ui.available_width() / 190.0).floor() as usize).max(1);
+        let mut open_notes = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for row in self.photos.chunks_mut(per_row) {
+            for (r, row) in self.photos.chunks_mut(per_row).enumerate() {
                 ui.horizontal(|ui| {
-                    for p in row {
+                    for (c, p) in row.iter_mut().enumerate() {
+                        let idx = r * per_row + c;
                         egui::Frame::group(ui.style())
                             .fill(if p.selected {
                                 ui.visuals().selection.bg_fill.gamma_multiply(0.35)
@@ -884,10 +1163,27 @@ impl App {
                                     if resp.clicked() {
                                         p.selected = !p.selected;
                                     }
+                                    if resp.double_clicked() {
+                                        open_notes = Some(idx);
+                                    }
                                     ui.checkbox(
                                         &mut p.selected,
                                         RichText::new(file_name(&p.path)).small(),
                                     );
+                                    let label = if p.notes.is_empty() {
+                                        "✏ Notes…".to_owned()
+                                    } else {
+                                        format!("✏ {} note(s)", p.notes.len())
+                                    };
+                                    if ui
+                                        .small_button(label)
+                                        .on_hover_text(
+                                            "Circle a part of this photo and say what to do there",
+                                        )
+                                        .clicked()
+                                    {
+                                        open_notes = Some(idx);
+                                    }
                                     if let Some(r) = &p.report {
                                         if r.closed_eyes {
                                             ui.colored_label(
@@ -905,6 +1201,11 @@ impl App {
                 });
             }
         });
+        if let Some(i) = open_notes {
+            self.annotating = Some(i);
+            self.pending = None;
+            self.stroke.clear();
+        }
     }
 
     fn board(&mut self, ui: &mut egui::Ui) {

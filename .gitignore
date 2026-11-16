@@ -1,3 +1,5 @@
 /target
 kimera.toml
 /dist
+# Installed agent skills: reinstall from skills-lock.json
+/.agents/skills/
