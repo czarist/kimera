@@ -1,0 +1,7 @@
+# Client web gallery: 2048 px JPEGs with a text watermark, camera data and GPS removed.
+# CHANGE the watermark text below to your own before running.
+
+[[stage]]
+app = "lightcraft"
+steps = []
+export = { format = "jpg", long_edge = 2048, quality = 85, color_space = "srgb", options = { sharpen = "screen", metadata = "copyright", removeLocation = true, watermark = { text = "© Your Studio", size = 0.03, opacity = 0.6, anchor = "bottomRight" } } }

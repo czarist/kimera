@@ -1,0 +1,17 @@
+# Portrait retouch: blemishes, softer skin with texture kept, brighter eyes, whiter teeth,
+# moody portrait look. Each face step is optional: skipped on photos where it finds nothing.
+# Needs LightCraft's YuNet (blemishes) and SAM 3 (skin, eyes, teeth) models.
+
+[[stage]]
+app = "lightcraft"
+steps = [
+  { cmd = "spot.findBlemishes", params = { sensitivity = 40, maxPerFace = 6 }, optional = "blemishes" },
+  { cmd = "preset.apply", params = { id = "lc.moody-portrait", amount = 70 } },
+  { cmd = "mask.add", params = { kind = "prompt", text = "facial skin" }, optional = "skin" },
+  { cmd = "mask.adjust", params = { values = { texture = -30, clarity = -10 } }, optional = "skin" },
+  { cmd = "mask.add", params = { kind = "prompt", text = "irises" }, optional = "eyes" },
+  { cmd = "mask.adjust", params = { values = { exposure = 0.25, clarity = 15, saturation = 10 } }, optional = "eyes" },
+  { cmd = "mask.add", params = { kind = "prompt", text = "teeth" }, optional = "teeth" },
+  { cmd = "mask.adjust", params = { values = { exposure = 0.15, saturation = -35, temp = -5 } }, optional = "teeth" },
+]
+export = { format = "jpg", quality = 94 }

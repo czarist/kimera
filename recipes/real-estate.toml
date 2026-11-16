@@ -1,0 +1,11 @@
+# Real estate: straight verticals, bright and airy, recovered windows, neutral colour.
+# Removes nothing from the scene: hiding permanent defects misleads buyers.
+
+[[stage]]
+app = "lightcraft"
+steps = [
+  { cmd = "develop.wb", params = { mode = "auto" } },
+  { cmd = "geometry.upright", params = { mode = "vertical" } },
+  { cmd = "develop.set", params = { values = { "light.exposure" = 0.3, "light.shadows" = 40, "light.highlights" = -60, "light.whites" = -10, "color.vibrance" = 10, "effects.clarity" = 8, "optics.defringePurple" = 5 } } },
+]
+export = { format = "jpg", long_edge = 3000, quality = 90, color_space = "srgb" }

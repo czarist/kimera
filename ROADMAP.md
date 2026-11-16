@@ -4,62 +4,67 @@ Kimera chains the Craft apps through their own command-line tools and control ch
 program at a time, without changing the apps. This page lists what is done and what comes next.
 Order can change; dates are not promised.
 
-Status: ✅ done · 🟡 in progress · ⬜ planned
+Status: ✅ done · 🟡 partly done · ⬜ planned
 
 ## 0.1 — Foundation ✅
 
-- ✅ `kimera doctor`: finds LightCraft, PhotoCraft and VectorCraft, prints their versions, checks
-  LightCraft's control channel.
-- ✅ `kimera pipeline`: exports the photos selected in LightCraft (or `--ids`) and runs a PhotoCraft
-  recipe on each file.
-- ✅ `kimera photocraft`: runs only the PhotoCraft part of a recipe on existing files.
-- ✅ TOML config (`kimera.toml`) and recipes (`recipes/*.toml`).
+- ✅ `kimera doctor`, `kimera pipeline`, TOML config and recipes.
 - ✅ Safety: no panics outside tests, no `unsafe`, loopback-only control channel, inputs never
   overwritten, one new folder per run.
 
-## 0.2 — The photographer's conveyor 🟡
+## 0.2 — The photographer's conveyor ✅
 
-- ✅ `kimera run`: a folder (or some files) through the recipe's stages in any order, e.g.
-  PhotoCraft clean-up → LightCraft masks; originals read only, one folder per stage.
-- ✅ LightCraft headless (`lightcraft-cli run --import`): no open app needed.
-- ✅ Progress as events (the engine is shared by the CLI and the coming window).
-- ⬜ AI analysis per photo (vision): blemish positions → `paint.spotHealing` / `paint.remove` on a
-  new layer; closed eyes → swap from a sibling frame (`loadFilesIntoStack` + align + eye mask),
-  or flag for review when there is none.
-- ⬜ Prompt → recipe through the user's AI (Anthropic / OpenAI API, or Claude Code / Codex),
-  checked against the apps' real command lists.
-- ⬜ Window (egui): setup with app paths and AI, folder thumbnails with pick one / some / all,
-  prompt, test on one photo with before/after, then the conveyor board with live log and cancel.
-- ⬜ Cancel a running stage (today cancel is checked between stages).
-- ⬜ Turn PhotoCraft's subject selection into a layer mask in the default recipe.
-- ⬜ Show each PhotoCraft command's result (for example the selection bounds), not only "done".
-- ⬜ End-to-end test of `pipeline` against a running LightCraft.
-- ⬜ Bring the result back into LightCraft, stacked with the original.
-- ⬜ More recipes: skin clean-up, background replacement, flatten to TIFF for delivery.
+- ✅ `kimera run`: a folder (or some files) through the recipe's stages in any order, headless,
+  one folder per stage, originals read only.
+- ✅ Variants (several results per photo) and optional step groups.
+- ✅ AI recipes from a request (Anthropic, OpenAI, Claude Code, Codex), checked against the apps'
+  real command lists, with the [playbook](prompts/playbook.md).
+- ✅ Per-photo AI look: red eyes fixed, closed eyes flagged with swap donors.
+- ✅ The window: setup, photos, request, recipe, test with before / after, conveyor board, log,
+  cancel, client proof.
+- ✅ Cancel stops the running app at once; progress as events shared by the CLI and the window.
+- ✅ Model checks and installs (SAM 3, YuNet, lens database); runs stop early when a required
+  step needs a missing model.
+- ✅ Bring results back into LightCraft, stacked on their originals (`pipeline --reimport`).
+- ✅ More recipes: portrait retouch, social formats, marketplace, B&W, web gallery, print, real
+  estate.
+- 🟡 Closed eyes: detected and flagged with donor frames; the swap itself is still done by hand.
+  An automatic swap (`loadFilesIntoStack` + align + eye mask) needs eye positions precise enough
+  to mask, and a careful test set of real portraits before it can be trusted.
+- ⬜ End-to-end test of `pipeline` and `--reimport` against a running LightCraft library (written,
+  not yet run against a real catalog).
 
-## 0.3 — More Craft apps ⬜
+## 0.3 — More Craft apps 🟡
 
-- ⬜ VectorCraft stage: place the photo in a poster layout (title, credits, event logo) and export.
-- ⬜ PdfCraft stage: contact sheet or client proof PDF from a run's results.
-- ⬜ `doctor` checks every configured app and its control port (LightCraft 7980, VectorCraft 7979).
+- ✅ VectorCraft stage: layouts and posters exported as PDF / PNG / SVG, with templates.
+- ✅ Client proof PDF (contact sheets through PhotoCraft).
+- ⬜ PdfCraft stage: waiting for PdfCraft's CLI on this setup; the proof covers the main need.
+- ⬜ `doctor` checks VectorCraft's control port (7979) for a VectorCraft `pipeline`.
 
-## 0.4 — Agent mode ⬜
+## 0.4 — Agent mode 🟡
 
-- ⬜ `kimera ask "<prompt>"`: starts the user's own agent (Claude Code or Codex) with only the MCP
-  server of the app the current stage needs, one app at a time.
-- ⬜ Target picker: the active photo, the selection, a stack or an album in LightCraft.
-- ⬜ Batch flow: edit the first photo, approve it, then apply to the rest.
+- ✅ `kimera ask "<request>"` with the user's own AI (API or Claude Code / Codex CLI).
+- ✅ Target picker in the window: one, some or all photos of a folder.
+- ✅ Batch flow: test on one photo, approve, then run on the rest.
+- ⬜ Interactive agent with the apps' MCP servers (`lightcraft-cli mcp`, `photocraft-cli mcp`) for
+  edits a recipe cannot express, one app at a time.
 
-## 0.5 — Undo ⬜
+## 0.5 — Undo ✅
 
-- ⬜ Undo a whole run: record each photo's LightCraft history position before a run and restore it
-  (`history.list` / `history.restore`).
+- ✅ Undo a `--reimport` (`kimera unimport <run folder>`): the imported results go to LightCraft's
+  Recently Deleted. Runs never edit LightCraft photos themselves, so nothing else needs undoing;
+  a run's files are in its own folder.
 
 ## Later
 
-- ⬜ Progress reporting and cancel for long runs.
-- ⬜ Release binaries for Windows, macOS and Linux.
-- ⬜ A shared recipe library.
+- ✅ Progress reporting and cancel for long runs.
+- 🟡 Release binaries: Windows zip and Inno Setup installer from `scripts/package.ps1` and
+  `installer/kimera.iss`; the GitHub workflow builds Windows, macOS and Linux archives for `v*`
+  tags (not yet run on a published tag).
+- ⬜ A shared recipe library online.
+- ⬜ Speed: keep one headless LightCraft session open per run (`serve`/MCP) so AI masks do not
+  reload SAM 3 for every photo.
+- ⬜ Window translations (Brazilian Portuguese first).
 
 ## Related
 

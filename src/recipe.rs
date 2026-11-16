@@ -16,7 +16,7 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 pub struct Recipe {
@@ -25,6 +25,69 @@ pub struct Recipe {
     pub export: Export,
     #[serde(rename = "stage", default)]
     pub stages: Vec<Stage>,
+    /// Several results per photo: each variant runs its own stages after the shared ones
+    /// (colour and B&W, feed and stories…).
+    #[serde(rename = "variant", default)]
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Variant {
+    /// Folder-safe name: `feed`, `stories`, `bw`.
+    pub name: String,
+    #[serde(rename = "stage", default)]
+    pub stages: Vec<Stage>,
+}
+
+impl Recipe {
+    /// Every full chain a photo goes through: `(variant name, shared stages + its own)`.
+    /// Without variants there is one unnamed chain.
+    pub fn chains(&self) -> Vec<(Option<&str>, Vec<&Stage>)> {
+        if self.variants.is_empty() {
+            return vec![(None, self.stages.iter().collect())];
+        }
+        self.variants
+            .iter()
+            .map(|v| {
+                (
+                    Some(v.name.as_str()),
+                    self.stages.iter().chain(&v.stages).collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Every non-optional step with its app and its `kind` parameter (masks), for model checks
+    /// (an optional step that fails is left out, so it never stops a photo).
+    pub fn steps_with_kind(&self) -> Vec<(&'static str, &str, Option<String>)> {
+        self.stages
+            .iter()
+            .chain(self.variants.iter().flat_map(|v| &v.stages))
+            .flat_map(|s| {
+                s.steps()
+                    .iter()
+                    .filter(|st| st.optional.is_none())
+                    .map(move |st| {
+                        let kind = st
+                            .params
+                            .as_ref()
+                            .and_then(|p| p.get("kind"))
+                            .and_then(|k| k.as_str())
+                            .map(str::to_owned);
+                        (s.app(), st.cmd.as_str(), kind)
+                    })
+            })
+            .collect()
+    }
+
+    /// Every command id the recipe uses, with its app.
+    pub fn commands(&self) -> Vec<(&'static str, &str)> {
+        self.stages
+            .iter()
+            .chain(self.variants.iter().flat_map(|v| &v.stages))
+            .flat_map(|s| s.steps().iter().map(move |st| (s.app(), st.cmd.as_str())))
+            .collect()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +95,7 @@ pub struct Recipe {
 pub enum Stage {
     Photocraft(PhotoCraftStage),
     Lightcraft(LightCraftStage),
+    Vectorcraft(VectorCraftStage),
 }
 
 impl Stage {
@@ -39,6 +103,7 @@ impl Stage {
         match self {
             Stage::Photocraft(_) => "photocraft",
             Stage::Lightcraft(_) => "lightcraft",
+            Stage::Vectorcraft(_) => "vectorcraft",
         }
     }
 
@@ -47,6 +112,7 @@ impl Stage {
         match self {
             Stage::Photocraft(s) => &s.out_ext,
             Stage::Lightcraft(s) => &s.export.format,
+            Stage::Vectorcraft(s) => &s.out_ext,
         }
     }
 
@@ -54,6 +120,7 @@ impl Stage {
         match self {
             Stage::Photocraft(s) => &s.steps,
             Stage::Lightcraft(s) => &s.steps,
+            Stage::Vectorcraft(s) => &s.steps,
         }
     }
 }
@@ -105,6 +172,22 @@ pub struct PhotoCraftStage {
     pub out_ext: String,
     #[serde(default)]
     pub steps: Vec<Step>,
+}
+
+/// A layout stage: the photo (or a template placing it through `{photo}`) exported as
+/// `out_ext` (`pdf`, `png`, `jpg`, `svg`…).
+#[derive(Debug, Deserialize)]
+pub struct VectorCraftStage {
+    #[serde(default)]
+    pub template: Option<PathBuf>,
+    #[serde(default = "default_vc_ext")]
+    pub out_ext: String,
+    #[serde(default)]
+    pub steps: Vec<Step>,
+}
+
+fn default_vc_ext() -> String {
+    "pdf".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +279,10 @@ pub struct Step {
     pub cmd: String,
     #[serde(default)]
     pub params: Option<toml::Value>,
+    /// Group name: when a step of the group fails (a prompt mask that finds nothing, no
+    /// subject…), every step of that group is skipped for that photo and the stage runs again.
+    #[serde(default)]
+    pub optional: Option<String>,
 }
 
 impl Step {
@@ -225,36 +312,69 @@ pub fn parse(text: &str) -> Result<Recipe> {
 
 /// Recipes may come from an AI: refuse anything that could escape a folder or a command line.
 fn validate(r: &Recipe) -> Result<()> {
-    if r.stages.is_empty() {
+    if r.stages.is_empty() && r.variants.is_empty() {
         bail!("the recipe has no [[stage]]");
     }
-    let last = r.stages.len().saturating_sub(1);
-    for (i, s) in r.stages.iter().enumerate() {
-        let n = i.saturating_add(1);
-        let ext = s.out_ext();
-        if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
-            bail!("stage {n}: output extension {ext:?} must be bare, such as \"tif\" or \"jpg\"");
-        }
-        if let Stage::Lightcraft(l) = s
-            && let Some(k) = l
-                .export
-                .options
-                .keys()
-                .find(|k| RESERVED_EXPORT_KEYS.contains(&k.as_str()))
+    let mut names = std::collections::HashSet::new();
+    for v in &r.variants {
+        if v.name.is_empty()
+            || v.name.len() > 40
+            || !v
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            bail!("stage {n}: export option {k:?} is set by Kimera; use the export fields");
+            bail!("variant name {:?} must be letters, digits, - or _", v.name);
         }
-        if i < last && ext.eq_ignore_ascii_case("pcraft") {
-            bail!("stage {n}: .pcraft can only be the last stage's output; use \"tif\"");
+        if !names.insert(v.name.to_lowercase()) {
+            bail!("variant {:?} appears twice", v.name);
         }
-        for st in s.steps() {
-            if !is_command_id(&st.cmd) {
-                bail!("stage {n}: {:?} is not a command id", st.cmd);
+        if v.stages.is_empty() && r.stages.is_empty() {
+            bail!("variant {:?} has no [[variant.stage]]", v.name);
+        }
+    }
+    for (name, chain) in r.chains() {
+        let at = |n: usize| match name {
+            Some(v) => format!("variant {v}, stage {n}"),
+            None => format!("stage {n}"),
+        };
+        let last = chain.len().saturating_sub(1);
+        for (i, s) in chain.iter().enumerate() {
+            let n = i.saturating_add(1);
+            let ext = s.out_ext();
+            if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+                bail!(
+                    "{}: output extension {ext:?} must be bare, such as \"tif\" or \"jpg\"",
+                    at(n)
+                );
             }
-            if let Some(p) = &st.params
-                && !p.is_table()
+            if let Stage::Lightcraft(l) = s
+                && let Some(k) = l
+                    .export
+                    .options
+                    .keys()
+                    .find(|k| RESERVED_EXPORT_KEYS.contains(&k.as_str()))
             {
-                bail!("stage {n}: params of {} must be a table", st.cmd);
+                bail!(
+                    "{}: export option {k:?} is set by Kimera; use the export fields",
+                    at(n)
+                );
+            }
+            if i < last && ext.eq_ignore_ascii_case("pcraft") {
+                bail!(
+                    "{}: .pcraft can only be the last stage's output; use \"tif\"",
+                    at(n)
+                );
+            }
+            for st in s.steps() {
+                if !is_command_id(&st.cmd) {
+                    bail!("{}: {:?} is not a command id", at(n), st.cmd);
+                }
+                if let Some(p) = &st.params
+                    && !p.is_table()
+                {
+                    bail!("{}: params of {} must be a table", at(n), st.cmd);
+                }
             }
         }
     }
@@ -336,10 +456,48 @@ mod tests {
     }
 
     #[test]
+    fn variants_make_one_chain_each() -> Result<()> {
+        let r = parse(
+            "[[stage]]
+app = \"photocraft\"
+[[variant]]
+name = \"feed\"
+[[variant.stage]]
+app = \"lightcraft\"
+[[variant]]
+name = \"stories\"
+[[variant.stage]]
+app = \"lightcraft\"
+steps = [{ cmd = \"mask.add\", optional = \"teeth\" }]
+",
+        )?;
+        let c = r.chains();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[1].0, Some("stories"));
+        assert_eq!(c[1].1.len(), 2);
+        assert_eq!(r.commands(), [("lightcraft", "mask.add")]);
+        assert_eq!(
+            r.variants[1].stages[0].steps()[0].optional.as_deref(),
+            Some("teeth")
+        );
+        assert!(
+            parse(
+                "[[variant]]
+name = \"a/b\"
+[[variant.stage]]
+app = \"lightcraft\"
+"
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unsafe_recipes_are_refused() {
         for bad in [
             "",
-            "[[stage]]\napp = \"vectorcraft\"\n",
+            "[[stage]]\napp = \"pdfcraft\"\n",
             "[[stage]]\napp = \"photocraft\"\nout_ext = \"../x\"\n",
             "[[stage]]\napp = \"lightcraft\"\nexport = { format = \"j.pg\" }\n",
             "[[stage]]\napp = \"photocraft\"\nsteps = [{ cmd = \"a=b\" }]\n",

@@ -2,7 +2,9 @@
 //! control channel of a running app, JSON lines on a loopback TCP port
 //! (`lightcraft --control 7980`; see LightCraft's docs/control-protocol.md).
 
-use crate::recipe::LightCraftStage;
+use super::StageFailed;
+use crate::procrun;
+use crate::recipe::{FileExport, Step};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::ffi::OsString;
@@ -10,6 +12,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 /// LightCraft caps a reply at 64 MiB before the newline.
@@ -86,9 +89,10 @@ fn parse_reply(reply: &str, id: u64) -> Result<Value> {
     let v: Value = serde_json::from_str(reply.trim_end())
         .context("LightCraft sent a reply that is not JSON")?;
     if let Some(got) = v.get("id").and_then(Value::as_u64)
-        && got != id {
-            bail!("LightCraft answered request {got}, expected {id}");
-        }
+        && got != id
+    {
+        bail!("LightCraft answered request {got}, expected {id}");
+    }
     match v.get("ok").and_then(Value::as_bool) {
         Some(true) => Ok(v.get("result").cloned().unwrap_or(Value::Null)),
         Some(false) => {
@@ -116,36 +120,56 @@ fn exported_files(r: &Value) -> Result<Vec<PathBuf>> {
 
 /// `lightcraft-cli run --import <input> <cmd> <json>… app.export <json>`: a throwaway headless
 /// session, so the user's library is never touched.
-pub fn run_args(input: &Path, out: &Path, stage: &LightCraftStage) -> Result<Vec<OsString>> {
+pub fn run_args(
+    input: &Path,
+    out: &Path,
+    steps: &[&Step],
+    export: &FileExport,
+) -> Result<Vec<OsString>> {
     if input == out {
         bail!("refusing to overwrite the input {}", input.display());
     }
     let mut a: Vec<OsString> = vec!["run".into(), "--import".into(), input.into()];
-    for s in &stage.steps {
+    for s in steps {
         a.push((&s.cmd).into());
         a.push(s.params_json()?.into());
     }
     a.push("app.export".into());
-    a.push(serde_json::to_string(&stage.export.params(out)?)?.into());
+    a.push(serde_json::to_string(&export.params(out)?)?.into());
     Ok(a)
 }
 
-/// Runs the stage on `input` and writes `out`.
-pub fn run_file(cli: &Path, input: &Path, out: &Path, stage: &LightCraftStage) -> Result<()> {
-    let args = run_args(input, out, stage)?;
-    let o = Command::new(cli)
-        .args(&args)
-        .output()
-        .with_context(|| format!("starting {}", cli.display()))?;
-    first_failure(&String::from_utf8_lossy(&o.stdout))
-        .with_context(|| format!("LightCraft failed on {}", input.display()))?;
+/// Runs `steps` on `input` and exports `out`. A failure is a [`StageFailed`] naming the step
+/// that stopped it (`None`: the import or the export).
+pub fn run_file(
+    cli: &Path,
+    input: &Path,
+    out: &Path,
+    steps: &[&Step],
+    export: &FileExport,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let mut cmd = Command::new(cli);
+    cmd.args(run_args(input, out, steps, export)?);
+    let o = procrun::run(cmd, None, cancel)?;
+    if let Some((i, msg)) = first_failure(&o.stdout) {
+        return Err(StageFailed {
+            step: (i < steps.len()).then_some(i),
+            message: format!("LightCraft failed on {}: {msg}", input.display()),
+        }
+        .into());
+    }
     if !o.status.success() {
-        bail!(
-            "LightCraft failed on {} ({}): {}",
-            input.display(),
-            o.status,
-            String::from_utf8_lossy(&o.stderr).trim()
-        );
+        return Err(StageFailed {
+            step: None,
+            message: format!(
+                "LightCraft failed on {} ({}): {}",
+                input.display(),
+                o.status,
+                o.stderr.trim()
+            ),
+        }
+        .into());
     }
     if !out.is_file() {
         bail!("LightCraft reported success but wrote no {}", out.display());
@@ -153,19 +177,58 @@ pub fn run_file(cli: &Path, input: &Path, out: &Path, stage: &LightCraftStage) -
     Ok(())
 }
 
-/// `run` prints one `{"command", "ok", "result" | "error"}` line per command.
-fn first_failure(stdout: &str) -> Result<()> {
-    for line in stdout.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
-            continue;
-        };
-        if v.get("ok").and_then(Value::as_bool) == Some(false) {
+/// `run` prints one `{"command", "ok", "result" | "error"}` line per command, in order, and
+/// stops at the first failure: its index and message.
+fn first_failure(stdout: &str) -> Option<(usize, String)> {
+    stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+        .filter(|v| v.get("command").is_some())
+        .enumerate()
+        .find(|(_, v)| v.get("ok").and_then(Value::as_bool) == Some(false))
+        .map(|(i, v)| {
             let cmd = v.get("command").and_then(Value::as_str).unwrap_or("?");
-            let err = v.get("error").and_then(Value::as_str).unwrap_or("unknown error");
-            bail!("{cmd}: {err}");
-        }
+            let err = v
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            (i, format!("{cmd}: {err}"))
+        })
+}
+
+/// Runs control-protocol methods or commands headless on LightCraft's demo library (no files,
+/// no user library) and returns each command's `result`; used for status queries.
+pub fn query(cli: &Path, commands: &[(&str, Value)], cancel: &AtomicBool) -> Result<Vec<Value>> {
+    let mut cmd = Command::new(cli);
+    cmd.args(["run", "--demo", "--keep-going"]);
+    for (c, p) in commands {
+        cmd.arg(c).arg(serde_json::to_string(p)?);
     }
-    Ok(())
+    let o = procrun::run(cmd, None, cancel)?;
+    let lines: Vec<Value> = o
+        .stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+        .filter(|v| v.get("command").is_some())
+        .collect();
+    if lines.len() != commands.len() {
+        bail!(
+            "LightCraft answered {} of {} queries: {}",
+            lines.len(),
+            commands.len(),
+            o.stderr.trim()
+        );
+    }
+    Ok(lines
+        .into_iter()
+        .map(|v| {
+            if v.get("ok").and_then(Value::as_bool) == Some(true) {
+                v.get("result").cloned().unwrap_or(Value::Null)
+            } else {
+                json!({"error": v.get("error").cloned().unwrap_or(Value::Null)})
+            }
+        })
+        .collect())
 }
 
 /// `lightcraft-cli --version`, first line.
@@ -217,11 +280,15 @@ mod tests {
 
     #[test]
     fn headless_args_import_run_then_export() -> Result<()> {
-        let st: LightCraftStage = toml::from_str(
-            "steps = [{ cmd = \"mask.add\", params = { kind = \"subject\" } }]
-",
+        let st: crate::recipe::LightCraftStage =
+            toml::from_str("steps = [{ cmd = \"mask.add\", params = { kind = \"subject\" } }]\n")?;
+        let steps: Vec<&Step> = st.steps.iter().collect();
+        let a = run_args(
+            Path::new("in.tif"),
+            Path::new("out.jpg"),
+            &steps,
+            &st.export,
         )?;
-        let a = run_args(Path::new("in.tif"), Path::new("out.jpg"), &st)?;
         let a: Vec<String> = a.iter().map(|s| s.to_string_lossy().into_owned()).collect();
         assert_eq!(
             a,
@@ -235,20 +302,17 @@ mod tests {
                 r#"{"longEdge":0,"path":"out.jpg"}"#
             ]
         );
-        assert!(run_args(Path::new("a.jpg"), Path::new("a.jpg"), &st).is_err());
+        assert!(run_args(Path::new("a.jpg"), Path::new("a.jpg"), &steps, &st.export).is_err());
         Ok(())
     }
 
     #[test]
-    fn failed_command_line_is_reported() {
-        let out = "{\"command\":\"develop.set\",\"ok\":true}
-noise
-{\"command\":\"nope\",\"error\":\"unknown command\",\"ok\":false}
-";
-        let e = first_failure(out).err().map(|e| e.to_string()).unwrap_or_default();
-        assert!(e.contains("nope: unknown command"), "{e}");
-        assert!(first_failure("{\"ok\":true}
-").is_ok());
+    fn failed_command_line_is_reported_with_its_index() {
+        let out = "{\"command\":\"develop.set\",\"ok\":true}\nnoise\n{\"command\":\"nope\",\"error\":\"unknown command\",\"ok\":false}\n";
+        let (i, msg) = first_failure(out).unwrap_or_default();
+        assert_eq!(i, 1);
+        assert!(msg.contains("nope: unknown command"), "{msg}");
+        assert!(first_failure("{\"command\":\"a\",\"ok\":true}\n").is_none());
     }
 
     #[test]

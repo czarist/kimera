@@ -1,17 +1,23 @@
 [package]
 name = "kimera"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "Kimera: a CLI tool for Craft apps (LightCraft, PhotoCraft, VectorCraft)"
+description = "Kimera: a photographer's conveyor over the Craft apps (LightCraft, PhotoCraft, VectorCraft), with an AI that writes the recipes"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+default-run = "kimera"
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
+eframe = "0.37.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+rfd = "0.18.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 toml = "1.2.1"
+ureq = { version = "3.5.2", features = ["json"] }
 
 [lints.rust]
 unsafe_code = "forbid"

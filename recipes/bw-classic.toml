@@ -1,0 +1,10 @@
+# Classic black and white: mixed from the photo's colours, deeper contrast, fine film grain.
+
+[[stage]]
+app = "lightcraft"
+steps = [
+  { cmd = "develop.treatment", params = { bw = true } },
+  { cmd = "develop.autoBwMix" },
+  { cmd = "develop.set", params = { values = { "light.contrast" = 25, "light.blacks" = -15, "light.whites" = 10, "effects.clarity" = 10, "grain.amount" = 18, "grain.size" = 25, "grain.roughness" = 50 } } },
+]
+export = { format = "jpg", quality = 92 }

@@ -1,0 +1,31 @@
+# Social formats: one look, three crops (feed 4:5, stories 9:16, square 1:1), light JPEGs.
+# Crops are centred: check wide photos, the subject may fall outside the 9:16 frame.
+
+[[stage]]
+app = "lightcraft"
+steps = [
+  { cmd = "develop.wb", params = { mode = "auto" } },
+  { cmd = "develop.set", params = { values = { "color.vibrance" = 25, "color.saturation" = 5, "mixer.orange.sat" = -5, "detail.sharpenAmount" = 40 } } },
+]
+export = { format = "tif", bit_depth = 16 }
+
+[[variant]]
+name = "feed"
+[[variant.stage]]
+app = "lightcraft"
+steps = [{ cmd = "crop.aspect", params = { aspect = "4x5" } }]
+export = { format = "jpg", long_edge = 1350, quality = 85, color_space = "srgb", options = { sharpen = "screen", metadata = "copyright", removeLocation = true } }
+
+[[variant]]
+name = "stories"
+[[variant.stage]]
+app = "lightcraft"
+steps = [{ cmd = "crop.aspect", params = { aspect = [9, 16] } }]
+export = { format = "jpg", long_edge = 1920, quality = 85, color_space = "srgb", options = { sharpen = "screen", metadata = "copyright", removeLocation = true } }
+
+[[variant]]
+name = "square"
+[[variant.stage]]
+app = "lightcraft"
+steps = [{ cmd = "crop.aspect", params = { aspect = "1x1" } }]
+export = { format = "jpg", long_edge = 1080, quality = 85, color_space = "srgb", options = { sharpen = "screen", metadata = "copyright", removeLocation = true } }

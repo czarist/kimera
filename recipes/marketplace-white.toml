@@ -1,0 +1,21 @@
+# Marketplace product photo: neutral colour, no dust, pure white background (#FFFFFF), JPEG.
+# Needs a clear product: a photo where PhotoCraft finds no subject stops at stage 2.
+# Squaring the canvas depends on each product's size: do it per photo, or use social-formats.
+
+[[stage]]
+app = "lightcraft"
+steps = [
+  { cmd = "develop.wb", params = { mode = "auto" } },
+  { cmd = "spot.findDust", params = { sensitivity = 70 } },
+  { cmd = "develop.set", params = { values = { "light.whites" = 15, "light.shadows" = 10, "detail.sharpenAmount" = 45 } } },
+]
+export = { format = "tif", bit_depth = 16, color_space = "srgb" }
+
+[[stage]]
+app = "photocraft"
+out_ext = "jpg"
+steps = [
+  { cmd = "select.subject" },
+  { cmd = "select.inverse" },
+  { cmd = "edit.fill", params = { contents = "white" } },
+]

@@ -25,6 +25,9 @@ command registries. When you need something not listed here, use only ids from t
    - **PhotoCraft:** pixel work. That covers removing objects, cutting out or replacing the
      background, extending the canvas, text, logos and other placed images, liquify, compositing
      several photos, layer styles, and exact pixel sizes for layouts.
+   - **VectorCraft** (only when its command list is given): layouts and posters exported as PDF,
+     PNG or SVG. A stage opens the photo itself, or a `template` file whose steps place it:
+     any string parameter equal to `{photo}` becomes the current file. Last stage only.
 3. **Order the stages.**
    - Raw files (`.cr2 .cr3 .nef .arw .raf .dng …`) go to **LightCraft first**: it develops the
      raw. PhotoCraft needs rendered pixels.
@@ -62,21 +65,30 @@ command registries. When you need something not listed here, use only ids from t
 - **[kimera: X]** The step needs a Kimera feature that is not built yet. Name it and offer
   the closest thing that works today.
 
-### Steps that find nothing fail the photo
+### Steps that find nothing: mark them optional
 
 Some steps look for something in the photo and **fail when it is not there**:
-- `mask.add` with kind `prompt` ("teeth", "irises"…) or `object`;
+- `mask.add` with kind `prompt` ("teeth", "irises"…), `object`, `subject`, `background` or
+  `sky` (also when the SAM 3 model is missing);
+- `spot.findBlemishes` without the YuNet face detector;
 - PhotoCraft `select.subject` followed by `select.inverse` (no selection to invert);
 - `layer.removeBackground` ("no subject found").
 
-That photo then stops at that stage. Kimera reports it, the original stays untouched, and the
-other photos go on. So emit these steps only when the user's selection really contains the
-thing (portraits for teeth, products for cut-outs). Tell the user which photos may stop and
-why **[kimera: optional steps]**.
+Give every step of such a group the same `optional = "<group>"` (the mask **and** its
+`mask.adjust`): when one fails, Kimera leaves the whole group out for that photo and runs the
+stage again, so the photo still gets everything else. Without `optional`, the photo stops at that
+stage (the original stays untouched, the other photos go on). Leave a step required only when the
+result is worthless without it (a white background for a marketplace).
 
 Steps that simply find nothing succeed without changes: `spot.findDust`,
 `spot.findBlemishes` once its face model is installed, `crop.autoStraighten` ("no dominant
 lines"), `geometry.upright`.
+
+### Several results per photo: variants
+
+`[[variant]]` tables run their own `[[variant.stage]]` after the shared stages, from the
+shared result: colour and B&W, feed and stories, full size and web. Put the shared work
+(clean-up, look) in `[[stage]]` and only what differs in each variant.
 
 ---
 
@@ -186,8 +198,8 @@ Each situation lists what people say, what they mean, and the recipe to emit.
 **S07. "Black and white" / "a B&W version too"**
 - Black and white only: `develop.treatment {bw: true}` + `develop.autoBwMix {}`, or the
   `lc.bw-*` presets.
-- "Too" means a colour **and** a black and white version **[kimera: several outputs per
-  photo]**. Until then, offer two runs, the second with the black and white stage.
+- "Too" means a colour **and** a black and white version: two variants, `color` (no steps,
+  just its export) and `bw` (the black and white steps).
 
 **S08. "Film grain" / "analog texture"**
 - `develop.set {values: {"grain.amount": 25, "grain.size": 30, "grain.roughness": 50}}`.
@@ -363,8 +375,8 @@ Each situation lists what people say, what they mean, and the recipe to emit.
   warn the user and test on one photo.
 
 **S64. "Every format at once"**
-- That means several outputs per photo **[kimera: several outputs per photo]**. Until then,
-  one run per format, with the same colour stages.
+- One variant per format (`feed`, `stories`, `square`, `banner`…), each with its
+  `crop.aspect` and export size, after shared colour stages (see `recipes/social-formats.toml`).
 
 **S65. "Light for the website" / "under 500 KB"**
 - `export = { format = "jpg", long_edge = 2048, quality = 80, options = { limitKb = 500 } }`.

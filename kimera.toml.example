@@ -15,3 +15,11 @@ cli = 'C:\Program Files\VectorCraft\vectorcraft-cli.exe'
 [work]
 # Each pipeline run writes to its own run-<time> folder in here.
 dir = 'F:\pipeline'
+
+[ai]
+# Who turns a request ("remove the pimples and give it a film look") into a recipe:
+# "anthropic" or "openai" (API key in ANTHROPIC_API_KEY / OPENAI_API_KEY),
+# or "claude-code" / "codex" (the CLIs signed in on this computer).
+provider = "anthropic"
+# model = "claude-opus-5-5"
+# api_key_env = "ANTHROPIC_API_KEY"
