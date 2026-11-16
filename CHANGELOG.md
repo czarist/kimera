@@ -18,6 +18,13 @@ All notable changes to Kimera are listed here. The format follows
 - `AGENTS.md`: guidance for AI coding agents (commands, rules, Craft CLI behaviour, verification,
   which installed skills to use).
 - `.github/dependabot.yml` for actions and crates.
+- An icon (`assets/kimera.svg`): a K over a conveyor carrying three photos, one per Craft app.
+  It is the window and taskbar icon and heads both READMEs.
+
+### Fixed
+
+- `scripts/package.ps1` finds the build wherever Cargo puts it (a local `.cargo/config.toml`
+  may move the target folder to another drive).
 
 ### Changed
 

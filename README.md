@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/kimera.svg" width="128" height="128" alt="Kimera">
+</p>
+
 <h1 align="center">Kimera</h1>
 
 <h3 align="center">Say what the photos need. The Craft apps do it, one after the other.</h3>

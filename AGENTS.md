@@ -44,6 +44,11 @@ cargo run --bin kimera-gui -- <photo folder> # the window, opened on a folder
 `kimera.toml` is git-ignored; copy `kimera.toml.example`. `scripts/package.ps1` builds the
 Windows zip.
 
+The build folder may not be `target/`: a git-ignored `.cargo/config.toml` can move it to
+another drive (`[build] target-dir = "F:/cargo-target/kimera"`). Scripts ask Cargo for it
+(`cargo metadata --format-version 1 --no-deps` → `target_directory`); never hard-code
+`target/`.
+
 ## Rules
 
 - **No `unwrap`, `expect`, `panic!`, `todo!`, `unreachable!` or `unsafe`** outside tests. The lints

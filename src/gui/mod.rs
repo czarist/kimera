@@ -25,11 +25,15 @@ const COMPARE_SIZE: u32 = 1400;
 const NOTE_EDITOR_SIZE: u32 = 1600;
 
 pub fn run() -> anyhow::Result<()> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1360.0, 860.0])
+        .with_min_inner_size([900.0, 600.0])
+        .with_title("Kimera");
+    if let Some(icon) = icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1360.0, 860.0])
-            .with_min_inner_size([900.0, 600.0])
-            .with_title("Kimera"),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -38,6 +42,18 @@ pub fn run() -> anyhow::Result<()> {
         Box::new(|cc| Ok(Box::new(App::new(cc.egui_ctx.clone())))),
     )
     .map_err(|e| anyhow::anyhow!("could not open the window: {e}"))
+}
+
+/// The window and taskbar icon (`assets/kimera.svg`, rendered at 256 px).
+fn icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(include_bytes!("../../assets/kimera-256.png"))
+        .ok()?
+        .to_rgba8();
+    Some(egui::IconData {
+        width: img.width(),
+        height: img.height(),
+        rgba: img.into_raw(),
+    })
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]

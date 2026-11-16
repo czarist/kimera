@@ -3,3 +3,5 @@ kimera.toml
 /dist
 # Installed agent skills: reinstall from skills-lock.json
 /.agents/skills/
+# Machine-local Cargo settings (e.g. build output on another drive)
+/.cargo/config.toml

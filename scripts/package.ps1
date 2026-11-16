@@ -12,9 +12,13 @@ $out = Join-Path $root "dist\$name"
 cargo build --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
+# Wherever Cargo builds (a local .cargo/config.toml may move it to another drive).
+$targetDir = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory
+$release = Join-Path $targetDir 'release'
+
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force $out | Out-Null
-Copy-Item target\release\kimera.exe, target\release\kimera-gui.exe $out
+Copy-Item (Join-Path $release 'kimera.exe'), (Join-Path $release 'kimera-gui.exe') $out
 Copy-Item -Recurse recipes (Join-Path $out 'recipes')
 Copy-Item kimera.toml.example, README.md, README.pt-BR.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE $out
 
