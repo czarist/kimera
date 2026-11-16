@@ -1,0 +1,14 @@
+# PhotoCraft selects the subject and keeps the result as a layered document.
+# For `kimera pipeline`, [export] says how photos leave the running LightCraft first.
+
+[export]
+format = "tif"
+bit_depth = 16
+long_edge = 0      # 0 = full size
+
+[[stage]]
+app = "photocraft"
+out_ext = "pcraft" # keeps layers; only as the last stage
+steps = [
+  { cmd = "select.subject" },
+]

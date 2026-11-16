@@ -1,0 +1,17 @@
+# Copy to kimera.toml (here or next to kimera.exe) and adjust the paths.
+# Single-quoted strings keep Windows backslashes as they are.
+
+[lightcraft]
+cli = 'F:\LightCraft\lightcraft-cli.exe'
+# A running `lightcraft --control 7980`.
+control = "127.0.0.1:7980"
+
+[photocraft]
+cli = 'F:\PhotoCraft\photocraft-cli.exe'
+
+[vectorcraft]
+cli = 'C:\Program Files\VectorCraft\vectorcraft-cli.exe'
+
+[work]
+# Each pipeline run writes to its own run-<time> folder in here.
+dir = 'F:\pipeline'

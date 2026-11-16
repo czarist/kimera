@@ -1,0 +1,20 @@
+# Photographer's conveyor: PhotoCraft cleans up, then LightCraft grades with masks.
+# Originals are never touched; each stage writes into its own folder of the run.
+
+[[stage]]
+app = "photocraft"
+out_ext = "tif"
+# Spot healing needs the blemish positions; the AI analysis (Kimera 0.2) adds
+# paint.spotHealing / paint.remove steps per photo. Without it this stage only converts.
+steps = []
+
+[[stage]]
+app = "lightcraft"
+steps = [
+  # Teal shadows, warm highlights, a little contrast and crushed blacks.
+  { cmd = "develop.set", params = { values = { "light.contrast" = 15, "light.blacks" = -12, "light.highlights" = -20, "grading.shadows.hue" = 200, "grading.shadows.sat" = 18, "grading.highlights.hue" = 40, "grading.highlights.sat" = 14, "grading.balance" = -10, "color.saturation" = -8, "vignette.amount" = -18 } } },
+  # Background a bit darker and cooler, so the subject stands out.
+  { cmd = "mask.add", params = { kind = "background", name = "Cinematic background" } },
+  { cmd = "mask.adjust", params = { values = { exposure = -0.35, temp = -8, clarity = -10 } } },
+]
+export = { format = "jpg", quality = 92 }
