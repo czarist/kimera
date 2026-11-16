@@ -210,8 +210,8 @@ estate, subject mask. `kimera recipes` lists them.
 ```sh
 cargo test                       # unit tests, no Craft apps needed
 cargo clippy --all-targets       # must be clean
-cargo run -- doctor              # the CLI against your kimera.toml
-cargo run --bin kimera-gui       # the window
+cargo run                        # the window
+cargo run --bin kimera -- doctor # the CLI against your kimera.toml
 ```
 
 | Path | What lives there |

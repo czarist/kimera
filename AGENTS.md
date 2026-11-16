@@ -37,8 +37,9 @@ steps. Kimera never changes the apps and never writes over a user's photo.
 cargo fmt
 cargo clippy --all-targets -- -D warnings   # CI fails on any warning
 cargo test                                   # no Craft apps needed
-cargo run -- doctor                          # CLI against ./kimera.toml
-cargo run --bin kimera-gui -- <photo folder> # the window, opened on a folder
+cargo run                                    # the window
+cargo run --bin kimera -- doctor             # CLI against ./kimera.toml
+cargo run -- <photo folder>                  # the window, opened on a folder
 ```
 
 `kimera.toml` is git-ignored; copy `kimera.toml.example`. `scripts/package.ps1` builds the

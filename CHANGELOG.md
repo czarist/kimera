@@ -28,6 +28,8 @@ All notable changes to Kimera are listed here. The format follows
 
 ### Changed
 
+- `cargo run` opens the window; the command line is `cargo run --bin kimera -- …`.
+
 - The recipe writer turns on only the apps a request needs, and refuses PhotoCraft stages without
   steps; `cleanup-cinematic` is LightCraft only.
 - README (English and Brazilian Portuguese) in the project's showcase style.

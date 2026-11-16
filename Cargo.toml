@@ -5,7 +5,7 @@ edition = "2024"
 description = "Kimera: a photographer's conveyor over the Craft apps (LightCraft, PhotoCraft, VectorCraft), with an AI that writes the recipes"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-default-run = "kimera"
+default-run = "kimera-gui"
 
 [dependencies]
 anyhow = "1.0.104"

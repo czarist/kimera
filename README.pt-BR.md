@@ -216,8 +216,8 @@ entrega para impressão, imobiliário e máscara de sujeito. `kimera recipes` li
 ```sh
 cargo test                       # testes, sem precisar dos apps Craft
 cargo clippy --all-targets       # precisa ficar limpo
-cargo run -- doctor              # o CLI com o seu kimera.toml
-cargo run --bin kimera-gui       # a janela
+cargo run                        # a janela
+cargo run --bin kimera -- doctor # o CLI com o seu kimera.toml
 ```
 
 | Caminho | O que fica ali |
