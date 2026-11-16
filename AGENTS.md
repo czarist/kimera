@@ -27,6 +27,7 @@ steps. Kimera never changes the apps and never writes over a user's photo.
 | `notes.rs` | Circled regions on one photo → steps for that photo (`NotesJob`). |
 | `analysis.rs` | The AI's look at each photo (closed eyes, red eyes) and LightCraft previews. |
 | `ai.rs` | One `ask()` over the four providers. |
+| `launch.rs` | Starts the Craft apps at Kimera's start (`launch.ps1` on Windows: WMI, hide/minimize). |
 | `status.rs` | Health checks, optional LightCraft models (`Model`), installs. |
 | `config.rs` | `kimera.toml`. |
 | `prompts/playbook.md` | The AI's knowledge of what users ask, mapped to real commands. |

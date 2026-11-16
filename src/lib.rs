@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod config;
 pub mod engine;
 pub mod gui;
+pub mod launch;
 pub mod notes;
 pub mod procrun;
 pub mod recipe;

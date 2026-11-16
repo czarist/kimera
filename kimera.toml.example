@@ -23,3 +23,11 @@ dir = 'F:\pipeline'
 provider = "anthropic"
 # model = "claude-opus-5-5"
 # api_key_env = "ANTHROPIC_API_KEY"
+
+[startup]
+# Start LightCraft, PhotoCraft and VectorCraft when Kimera starts, if they are not running
+# yet (LightCraft with its control channel, for pipeline and model installs).
+# `kimera --no-open ...` skips it once.
+open_apps = true
+# "hidden" (in the background, no window), "minimized" or "normal". Windows only.
+window = "hidden"

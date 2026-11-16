@@ -22,6 +22,9 @@ struct Cli {
     /// kimera.toml (default: ./kimera.toml, then next to kimera.exe)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+    /// Don't open the Craft apps' windows this time (see `[startup] open_apps`)
+    #[arg(long, global = true)]
+    no_open: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -149,6 +152,11 @@ fn run(cli: Cli) -> Result<()> {
     let cfg_path = config::locate(cli.config.as_deref())?;
     let cfg = config::load(&cfg_path)?;
     let cancel = AtomicBool::new(false);
+    if cfg.startup.open_apps && !cli.no_open && !matches!(cli.cmd, Cmd::Check { .. }) {
+        for line in kimera::launch::report(&kimera::launch::open_apps(&cfg)) {
+            eprintln!("{line}");
+        }
+    }
     match cli.cmd {
         Cmd::Doctor => doctor(&cfg, &cancel),
         Cmd::Run {

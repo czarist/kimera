@@ -18,6 +18,10 @@ All notable changes to Kimera are listed here. The format follows
 - `AGENTS.md`: guidance for AI coding agents (commands, rules, Craft CLI behaviour, verification,
   which installed skills to use).
 - `.github/dependabot.yml` for actions and crates.
+- Kimera starts LightCraft (with its control channel), PhotoCraft and VectorCraft when it
+  starts, if they are not running: in the background by default, or minimized, or as normal
+  windows (`[startup]` in `kimera.toml`, Setup in the window). `--no-open` skips it once; the
+  window's Setup has an *Open apps* button.
 - An icon (`assets/kimera.svg`): a K over a conveyor carrying three photos, one per Craft app.
   It is the window and taskbar icon and heads both READMEs.
 

@@ -13,6 +13,56 @@ pub struct Config {
     pub work: Work,
     #[serde(default)]
     pub ai: Ai,
+    #[serde(default)]
+    pub startup: Startup,
+}
+
+/// What Kimera does when it starts.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Startup {
+    /// Open the Craft apps' windows (LightCraft with its control channel) if they are not open.
+    #[serde(default = "yes")]
+    pub open_apps: bool,
+    /// How their windows open.
+    #[serde(default)]
+    pub window: WindowStyle,
+}
+
+impl Default for Startup {
+    fn default() -> Self {
+        Self {
+            open_apps: true,
+            window: WindowStyle::default(),
+        }
+    }
+}
+
+/// How the Craft apps' windows open when Kimera starts them (Windows; elsewhere always normal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowStyle {
+    /// Running in the background, with no window and no taskbar button.
+    #[default]
+    Hidden,
+    /// In the taskbar, minimized.
+    Minimized,
+    Normal,
+}
+
+impl WindowStyle {
+    pub const ALL: [Self; 3] = [Self::Hidden, Self::Minimized, Self::Normal];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hidden => "in the background (hidden)",
+            Self::Minimized => "minimized",
+            Self::Normal => "normal windows",
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -158,6 +208,7 @@ impl Default for Config {
                 dir: dirs_pictures().join("Kimera"),
             },
             ai: Ai::default(),
+            startup: Startup::default(),
         }
     }
 }

@@ -102,7 +102,11 @@ sua pasta (só leitura)
      **Codex** (os CLIs `claude` / `codex` logados neste computador).
 3. **Save.** As verificações mostram o que funciona e quais modelos opcionais do LightCraft
    faltam: SAM 3 (máscaras com IA), YuNet (tirar espinhas sozinho), base de lentes. Cada um pode
-   ser instalado dali, por um `lightcraft --control 7980` aberto.
+   ser instalado dali.
+4. **Os apps sobem junto com o Kimera.** Se o LightCraft, o PhotoCraft ou o VectorCraft não
+   estiver aberto, o Kimera abre, em segundo plano por padrão (o LightCraft com o canal de
+   controle, que as instalações de modelos e o `pipeline` usam). No Setup dá para escolher
+   janela oculta, minimizada ou normal, ou desligar; `kimera --no-open …` pula uma vez.
 
 As configurações ficam em `kimera.toml`, ao lado do programa. O `kimera.toml.example` explica
 cada chave.

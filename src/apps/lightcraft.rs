@@ -36,6 +36,15 @@ impl Control {
         Ok(Self { addr, next_id: 1 })
     }
 
+    pub fn port(&self) -> u16 {
+        self.addr.port()
+    }
+
+    /// Whether something listens on the control port (a running `lightcraft --control`).
+    pub fn answers(&self) -> bool {
+        TcpStream::connect_timeout(&self.addr, Duration::from_millis(500)).is_ok()
+    }
+
     /// One request, one reply. Exports can take minutes, hence the long read timeout.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         let mut s =

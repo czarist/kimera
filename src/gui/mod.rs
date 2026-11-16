@@ -182,7 +182,11 @@ impl App {
             note_text: String::new(),
             focus_note: false,
         };
-        app.start_checks();
+        if app.cfg.startup.open_apps && !first_run {
+            app.open_apps();
+        } else {
+            app.start_checks();
+        }
         // `kimera-gui <folder>`: "Open with" or a folder dropped on the program.
         if let Some(dir) = std::env::args_os()
             .nth(1)
@@ -205,6 +209,13 @@ impl App {
     fn start_checks(&mut self) {
         self.busy = Some(Busy::Checking);
         jobs::checks(self.cfg.clone(), self.tx.clone(), self.ctx.clone());
+    }
+
+    /// Opens the Craft apps, then checks again (LightCraft's control channel is a check).
+    fn open_apps(&mut self) {
+        self.busy = Some(Busy::Checking);
+        self.say("Opening the Craft apps…");
+        jobs::open_apps(self.cfg.clone(), self.tx.clone(), self.ctx.clone());
     }
 
     fn selected(&self) -> Vec<PathBuf> {
@@ -426,6 +437,12 @@ impl App {
                     self.load_compare();
                 }
             }
+            Msg::Opened(lines) => {
+                for l in lines {
+                    self.say(l);
+                }
+                self.start_checks();
+            }
             Msg::Installed(r) => {
                 self.busy = None;
                 match r {
@@ -597,6 +614,20 @@ impl App {
                 ui.text_edit_singleline(&mut self.cfg.lightcraft.control);
                 ui.label("only for catalog export and model installs");
                 ui.end_row();
+                ui.label("At start");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.cfg.startup.open_apps, "open the Craft apps");
+                    ui.add_enabled_ui(self.cfg.startup.open_apps, |ui| {
+                        egui::ComboBox::from_id_salt("window_style")
+                            .selected_text(self.cfg.startup.window.label())
+                            .show_ui(ui, |ui| {
+                                for w in config::WindowStyle::ALL {
+                                    ui.selectable_value(&mut self.cfg.startup.window, w, w.label());
+                                }
+                            });
+                    });
+                });
+                ui.end_row();
             });
             ui.separator();
             ui.heading("AI");
@@ -647,6 +678,9 @@ impl App {
                 }
                 if ui.add_enabled(self.busy.is_none(), egui::Button::new("Check again")).clicked() {
                     self.start_checks();
+                }
+                if ui.add_enabled(self.busy.is_none(), egui::Button::new("Open apps")).clicked() {
+                    self.open_apps();
                 }
             });
             ui.separator();

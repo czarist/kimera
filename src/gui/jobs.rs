@@ -29,6 +29,8 @@ pub enum Msg {
         result: Result<String, String>,
     },
     Installed(Result<String, String>),
+    /// The Craft apps' windows were opened (or found open); one line per app.
+    Opened(Vec<String>),
     Proof(Result<Vec<PathBuf>, String>),
     Log(String),
 }
@@ -57,6 +59,14 @@ pub fn checks(cfg: Config, tx: Sender<Msg>, ctx: Context) {
     std::thread::spawn(move || {
         let c = status::all(&cfg, &AtomicBool::new(false));
         send(&tx, &ctx, Msg::Checks(c));
+    });
+}
+
+/// Opens the Craft apps' windows; LightCraft may take a while to open its control port.
+pub fn open_apps(cfg: Config, tx: Sender<Msg>, ctx: Context) {
+    std::thread::spawn(move || {
+        let lines = crate::launch::report(&crate::launch::open_apps(&cfg));
+        send(&tx, &ctx, Msg::Opened(lines));
     });
 }
 

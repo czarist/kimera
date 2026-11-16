@@ -100,7 +100,11 @@ your folder (read only)
      (the `claude` / `codex` CLIs signed in on this computer).
 3. **Save.** The checks show what works and which optional LightCraft models are missing:
    SAM 3 (AI masks), YuNet (automatic blemish removal), the lens database. Each can be installed
-   from there through a running `lightcraft --control 7980`.
+   from there.
+4. **The apps start with Kimera.** If LightCraft, PhotoCraft or VectorCraft is not running,
+   Kimera starts it, in the background by default (LightCraft with its control channel, which
+   model installs and `pipeline` use). Setup chooses hidden, minimized or normal windows, or
+   turns it off; `kimera --no-open …` skips it once.
 
 Settings live in `kimera.toml` next to the program. `kimera.toml.example` documents every key.
 
