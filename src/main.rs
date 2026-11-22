@@ -44,6 +44,17 @@ enum Cmd {
         /// Notes per photo: a JSON file {"photo path": [{"points": [[x, y], …], "text": "…"}]}
         #[arg(long)]
         notes: Option<PathBuf>,
+        /// Let the AI finish each photo: it sets the develop sliders, sees the result and
+        /// corrects it (two AI questions and two small renders per photo)
+        #[arg(long)]
+        finish: bool,
+        /// A finished photo whose look the finish should match (repeat for several, or give a
+        /// folder); implies --finish
+        #[arg(long = "reference")]
+        references: Vec<PathBuf>,
+        /// What the photographer wants, in their words, for the finish
+        #[arg(long, default_value = "")]
+        brief: String,
         /// Photo files or folders (a folder gives its top-level images)
         #[arg(required = true)]
         paths: Vec<PathBuf>,
@@ -163,11 +174,22 @@ fn run(cli: Cli) -> Result<()> {
             recipe,
             analyse,
             notes,
+            finish,
+            references,
+            brief,
             paths,
         } => {
             let mut r = recipe::load(&recipe)?;
             let files = photos(&paths)?;
-            let extras = extras_for(&cfg, &files, analyse, notes.as_deref(), &mut r, &cancel)?;
+            let mut extras = extras_for(&cfg, &files, analyse, notes.as_deref(), &mut r, &cancel)?;
+            if finish || !references.is_empty() {
+                let refs = if references.is_empty() {
+                    Vec::new()
+                } else {
+                    photos(&references)?
+                };
+                finish_all(&cfg, &files, &refs, &brief, &mut r, &mut extras, &cancel)?;
+            }
             stages(
                 &cfg,
                 &r,
@@ -311,10 +333,13 @@ fn ask(cfg: &config::Config, args: AskArgs, cancel: &AtomicBool) -> Result<()> {
     let mut draft = writer::write(
         &kimera::ai_client(cfg),
         &cats,
-        request,
-        &files,
-        previous.as_deref(),
-        &context,
+        &writer::Request {
+            text: request,
+            photos: &files,
+            previous: previous.as_deref(),
+            context: &context,
+            ..writer::Request::default()
+        },
         cancel,
     )?;
     println!("\n{}\n", draft.notes);
@@ -428,7 +453,7 @@ fn look(cfg: &config::Config, files: &[PathBuf], cancel: &AtomicBool) -> Result<
                     i,
                     engine::PhotoExtras {
                         lightcraft: r.extra_steps(),
-                        photocraft: Vec::new(),
+                        ..engine::PhotoExtras::default()
                     },
                 )
             })
@@ -475,6 +500,70 @@ fn extras_for(
         println!("Turned {app} on for the per-photo steps (the recipe did not use it)");
     }
     Ok(extras)
+}
+
+/// The AI's finish of every photo (see `kimera::look`), added to `extras`.
+fn finish_all(
+    cfg: &config::Config,
+    files: &[PathBuf],
+    references: &[PathBuf],
+    brief: &str,
+    r: &mut Recipe,
+    extras: &mut Extras,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    use kimera::look;
+    let scratch = cfg.work.dir.join(".kimera").join("finish");
+    let refs = look::references(
+        &cfg.lightcraft.cli,
+        references,
+        &scratch,
+        cancel,
+        &mut |l| {
+            println!("{l}");
+        },
+    )?;
+    if !references.is_empty() && refs.is_empty() {
+        bail!("none of the reference photos could be read");
+    }
+    let base = look::look_steps(r);
+    let client = kimera::ai_client(cfg);
+    let retouch = look::retouch_fits(r) && cfg.photocraft.cli.is_file();
+    let sam = kimera::status::Models::read(cfg, cancel).is_some_and(|m| m.sam3);
+    let scans = kimera::portrait::scratch(&cfg.work.dir);
+    let job = look::FinishJob {
+        client: &client,
+        lightcraft: &cfg.lightcraft.cli,
+        scratch: &scratch,
+        brief,
+        base: &base,
+        references: &refs,
+        passes: look::Passes::Two,
+        scans: &scans,
+        sam,
+        retouch,
+        cancel,
+    };
+    let mut anchor = None;
+    for (i, f) in files.iter().enumerate() {
+        match job.finish(f, anchor.as_ref(), &mut |l| println!("{l}")) {
+            Ok(fin) => {
+                println!("{}: {}", file_name(f), fin.summary);
+                if anchor.is_none() {
+                    anchor = fin.anchor;
+                }
+                let x = extras.entry(i).or_default();
+                x.lightcraft_finish = fin.steps;
+                x.photocraft.extend(fin.photocraft);
+            }
+            Err(e) if kimera::procrun::is_cancelled(&e) => return Err(e),
+            Err(e) => eprintln!("{}: not finished ({e:#})", file_name(f)),
+        }
+    }
+    for app in engine::ensure_apps(r, extras, files) {
+        println!("Turned {app} on for the finish (the recipe did not use it)");
+    }
+    Ok(())
 }
 
 /// Notes keyed by photo index: the same path, or the same file name when that is unique.
@@ -673,6 +762,7 @@ fn stages(
         extras,
         cancel,
         &mut |e| match e {
+            Event::PhotoStarted { .. } => {}
             Event::StageStarted { photo, slot } => {
                 println!(
                     "[{}/{total}] {} : {}",

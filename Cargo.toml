@@ -29,3 +29,8 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 unreachable = "deny"
+
+# Dependencies built optimized even in debug: decoding and resizing a 24-megapixel photo in an
+# unoptimized `image` crate takes many seconds, which makes `cargo run` feel stuck.
+[profile.dev.package."*"]
+opt-level = 3

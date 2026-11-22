@@ -45,6 +45,10 @@ pub struct Slot {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    /// The photo's turn has come: its per-photo preparation (AI look, finishing) starts.
+    PhotoStarted {
+        photo: usize,
+    },
     StageStarted {
         photo: usize,
         slot: usize,
@@ -85,21 +89,26 @@ pub struct Summary {
 }
 
 /// Extra steps for one photo (the AI's look, the user's notes), run at the start of the first
-/// stage of that app in each chain. They should be in optional groups.
+/// stage of that app in each chain, and the per-photo finish ([`crate::look`]) run at the end of
+/// the first LightCraft stage, over the recipe's own look. They should be in optional groups.
 #[derive(Debug, Clone, Default)]
 pub struct PhotoExtras {
     pub lightcraft: Vec<Step>,
     pub photocraft: Vec<Step>,
+    pub lightcraft_finish: Vec<Step>,
 }
 
 impl PhotoExtras {
     pub fn merge(&mut self, other: PhotoExtras) {
         self.lightcraft.extend(other.lightcraft);
         self.photocraft.extend(other.photocraft);
+        self.lightcraft_finish.extend(other.lightcraft_finish);
     }
 
     pub fn is_empty(&self) -> bool {
-        self.lightcraft.is_empty() && self.photocraft.is_empty()
+        self.lightcraft.is_empty()
+            && self.photocraft.is_empty()
+            && self.lightcraft_finish.is_empty()
     }
 }
 
@@ -110,12 +119,27 @@ pub type Extras = HashMap<usize, PhotoExtras>;
 /// stage (16-bit TIFF) or a PhotoCraft stage (TIFF) at the start, LightCraft first when raw
 /// photos need developing before PhotoCraft. Returns what was added, for the log.
 pub fn ensure_apps(recipe: &mut Recipe, extras: &Extras, photos: &[PathBuf]) -> Vec<App> {
+    let lc = extras
+        .values()
+        .any(|x| !x.lightcraft.is_empty() || !x.lightcraft_finish.is_empty());
+    let pc = extras.values().any(|x| !x.photocraft.is_empty());
+    ensure_stages(recipe, lc, pc, photos)
+}
+
+/// [`ensure_apps`] for steps known only later (made just before each photo's turn): adds a
+/// LightCraft stage when `lightcraft` steps will come, a PhotoCraft one for `photocraft`.
+pub fn ensure_stages(
+    recipe: &mut Recipe,
+    lightcraft: bool,
+    photocraft: bool,
+    photos: &[PathBuf],
+) -> Vec<App> {
     use crate::recipe::{FileExport, LightCraftStage, PhotoCraftStage};
     let all: Vec<&Stage> = slot_stages(recipe);
     let has_lc = all.iter().any(|s| matches!(s, Stage::Lightcraft(_)));
     let has_pc = all.iter().any(|s| matches!(s, Stage::Photocraft(_)));
-    let need_lc = extras.values().any(|x| !x.lightcraft.is_empty()) && !has_lc;
-    let need_pc = extras.values().any(|x| !x.photocraft.is_empty()) && !has_pc;
+    let need_lc = lightcraft && !has_lc;
+    let need_pc = photocraft && !has_pc;
     let lc = || {
         Stage::Lightcraft(LightCraftStage {
             steps: Vec::new(),
@@ -291,7 +315,6 @@ struct Ctx<'a> {
     stages: Vec<&'a Stage>,
     dirs: Vec<PathBuf>,
     extras_at: HashSet<usize>,
-    extras: &'a Extras,
     cancel: &'a AtomicBool,
 }
 
@@ -302,6 +325,29 @@ pub fn run(
     photos: &[PathBuf],
     run_dir: &Path,
     extras: &Extras,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Event),
+) -> Result<Summary> {
+    run_prepared(
+        apps,
+        recipe,
+        photos,
+        run_dir,
+        &mut |i| extras.get(&i).cloned().unwrap_or_default(),
+        cancel,
+        on,
+    )
+}
+
+/// [`run`], with each photo's extras made just before its turn by `prepare` (so per-photo AI
+/// work and the conveyor alternate, and the first result comes early). `prepare` reports its
+/// own problems and returns what it could make.
+pub fn run_prepared(
+    apps: &Apps,
+    recipe: &Recipe,
+    photos: &[PathBuf],
+    run_dir: &Path,
+    prepare: &mut dyn FnMut(usize) -> PhotoExtras,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Event),
 ) -> Result<Summary> {
@@ -318,7 +364,6 @@ pub fn run(
         stages: slot_stages(recipe),
         dirs,
         extras_at: first_slots(recipe),
-        extras,
         cancel,
     };
     let (shared, variants) = chains(recipe);
@@ -329,15 +374,26 @@ pub fn run(
             sum.cancelled = true;
             break;
         }
+        on(Event::PhotoStarted { photo });
+        let extra = prepare(photo);
+        if cancel.load(Ordering::Relaxed) {
+            sum.cancelled = true;
+            break;
+        }
         let mut failed = false;
         let mut outs = Vec::new();
-        match run_chain(&cx, photo, name, input, &shared, &mut sum, on) {
+        let px = PhotoRun {
+            photo,
+            name,
+            extra: &extra,
+        };
+        match run_chain(&cx, &px, input, &shared, &mut sum, on) {
             Ok(base) => {
                 if variants.is_empty() {
                     outs.push(base);
                 } else {
                     for v in &variants {
-                        match run_chain(&cx, photo, name, &base, v, &mut sum, on) {
+                        match run_chain(&cx, &px, &base, v, &mut sum, on) {
                             Ok(out) => outs.push(out),
                             Err(Stop::Failed) => failed = true,
                             Err(Stop::Cancelled) => {
@@ -370,15 +426,23 @@ enum Stop {
     Cancelled,
 }
 
+/// The photo a chain runs for.
+struct PhotoRun<'a> {
+    photo: usize,
+    /// Output file stem.
+    name: &'a str,
+    extra: &'a PhotoExtras,
+}
+
 fn run_chain(
     cx: &Ctx,
-    photo: usize,
-    name: &str,
+    px: &PhotoRun<'_>,
     input: &Path,
     slots: &[usize],
     sum: &mut Summary,
     on: &mut dyn FnMut(Event),
 ) -> std::result::Result<PathBuf, Stop> {
+    let PhotoRun { photo, name, extra } = *px;
     let mut cur = input.to_path_buf();
     for &slot in slots {
         let (Some(stage), Some(dir)) = (cx.stages.get(slot), cx.dirs.get(slot)) else {
@@ -393,6 +457,7 @@ fn run_chain(
         let job = StageJob {
             photo,
             slot,
+            extra,
             stage,
             input: &cur,
             out: &out,
@@ -425,6 +490,7 @@ fn run_chain(
 struct StageJob<'a> {
     photo: usize,
     slot: usize,
+    extra: &'a PhotoExtras,
     stage: &'a Stage,
     input: &'a Path,
     out: &'a Path,
@@ -440,23 +506,26 @@ fn run_stage(
     let StageJob {
         photo,
         slot,
+        extra: x,
         stage,
         input,
         out,
     } = *job;
-    let extra: &[Step] = match (cx.extras_at.contains(&slot), cx.extras.get(&photo)) {
-        (true, Some(x)) => match stage {
-            Stage::Lightcraft(_) => &x.lightcraft,
-            Stage::Photocraft(_) => &x.photocraft,
-            Stage::Vectorcraft(_) => &[],
-        },
-        _ => &[],
+    let (before, after): (&[Step], &[Step]) = if cx.extras_at.contains(&slot) {
+        match stage {
+            Stage::Lightcraft(_) => (&x.lightcraft, &x.lightcraft_finish),
+            Stage::Photocraft(_) => (&x.photocraft, &[]),
+            Stage::Vectorcraft(_) => (&[], &[]),
+        }
+    } else {
+        (&[], &[])
     };
     let mut skip: HashSet<String> = HashSet::new();
     loop {
-        let steps: Vec<&Step> = extra
+        let steps: Vec<&Step> = before
             .iter()
             .chain(stage.steps())
+            .chain(after)
             .filter(|s| s.optional.as_ref().is_none_or(|g| !skip.contains(g)))
             .collect();
         let r = match stage {
@@ -563,6 +632,7 @@ mod tests {
             PhotoExtras {
                 lightcraft: vec![step()],
                 photocraft: vec![],
+                lightcraft_finish: vec![],
             },
         )]
         .into();
@@ -574,6 +644,7 @@ mod tests {
             PhotoExtras {
                 lightcraft: vec![],
                 photocraft: vec![step()],
+                lightcraft_finish: vec![],
             },
         )]
         .into();

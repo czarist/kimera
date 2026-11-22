@@ -149,27 +149,58 @@ pub fn check(r: &Recipe, catalogs: &[Catalog]) -> Result<()> {
     Ok(())
 }
 
+/// What the recipe is asked for.
+#[derive(Debug, Default)]
+pub struct Request<'a> {
+    /// The user's words.
+    pub text: &'a str,
+    pub photos: &'a [PathBuf],
+    /// A recipe the user wants changed.
+    pub previous: Option<&'a str>,
+    /// This computer (installed models).
+    pub context: &'a str,
+    /// Small JPEGs of the user's finished photos whose look the recipe should carry.
+    pub references: &'a [PathBuf],
+    /// Whether the per-photo finish ([`crate::look`]) runs after the recipe.
+    pub finishing: bool,
+}
+
+/// Tells the writer what the per-photo finish takes care of.
+const FINISHING_NOTE: &str = "After this recipe, Kimera's per-photo finish runs: the AI looks at every photo as the recipe renders it and sets LightCraft's develop sliders for that photo (exposure, white balance, contrast, tone curve, colour mixer, grading, clarity, vignette, grain), matching the reference photos when there are any. So the recipe should carry what is NOT per-photo slider work: retouching, masks and local work, black & white, a creative look the request asks for, crops, formats and variants. Keep any develop.set values for the general look moderate; don't fight the finish with strong global tone values.";
+
 /// Asks for a recipe, retrying twice with the error when the answer does not check out.
-/// `previous` is a recipe the user wants changed; `context` describes this computer (installed
-/// models).
 pub fn write(
     client: &Client,
     catalogs: &[Catalog],
-    request: &str,
-    photos: &[PathBuf],
-    previous: Option<&str>,
-    context: &str,
+    req: &Request<'_>,
     cancel: &AtomicBool,
 ) -> Result<Draft> {
     let system = system_prompt(catalogs);
-    let mut first = format!("{}\n{context}\n\nRequest: {request}", describe(photos));
-    if let Some(p) = previous {
+    let mut first = format!(
+        "{}\n{}\n\nRequest: {}",
+        describe(req.photos),
+        req.context,
+        req.text
+    );
+    if req.finishing {
+        let _ = write!(first, "\n\n{FINISHING_NOTE}");
+    }
+    if let Some(p) = req.previous {
         let _ = write!(
             first,
             "\n\nChange this recipe rather than starting over:\n```toml\n{p}\n```"
         );
     }
-    let mut turns = vec![Turn::user(vec![Part::Text(first)])];
+    let mut parts = Vec::new();
+    if !req.references.is_empty() {
+        parts.push(Part::Text(format!(
+            "The photographer's finished work ({} photo(s)) shows the look they want. Read its style (colour or black & white, mood, contrast, grading, grain, crop and format) and build the recipe's look from it:",
+            req.references.len()
+        )));
+        parts.extend(req.references.iter().cloned().map(Part::Jpeg));
+    }
+    parts.push(Part::Text(first));
+    let mut turns = vec![Turn::user(parts)];
     let mut last_err = String::new();
     for _ in 0..3 {
         let reply = client.ask(&system, &turns, cancel)?;

@@ -34,6 +34,14 @@ impl Queue {
         q
     }
 
+    /// Adds pictures to the end of the list (results of a run).
+    pub fn push(&self, paths: Vec<PathBuf>) {
+        if let Ok(mut g) = self.items.lock() {
+            g.1.extend(paths);
+        }
+        self.wake.notify_all();
+    }
+
     /// Replaces the pending list (a new folder).
     pub fn reset(&self, paths: Vec<PathBuf>) {
         if let Ok(mut g) = self.items.lock() {
@@ -91,7 +99,7 @@ pub fn is_viewable(p: &Path) -> bool {
 /// A picture of `path` no larger than `max` pixels on its long edge.
 pub fn load_rgba(path: &Path, lightcraft: &Path, max: u32) -> Option<ColorImage> {
     let direct = DIRECT.contains(&ext(path).as_str());
-    let img = if direct { image::open(path).ok() } else { None };
+    let img = if direct { open_upright(path) } else { None };
     let img = match img {
         Some(i) => i,
         None => {
@@ -100,7 +108,7 @@ pub fn load_rgba(path: &Path, lightcraft: &Path, max: u32) -> Option<ColorImage>
             std::fs::create_dir_all(&dir).ok()?;
             let key = format!(
                 "{:x}",
-                fnv(path.to_string_lossy().as_bytes()) ^ u64::from(max)
+                crate::look::fnv(path.to_string_lossy().as_bytes()) ^ u64::from(max)
             );
             let out = dir.join(format!("{key}.jpg"));
             if !out.is_file() {
@@ -115,8 +123,20 @@ pub fn load_rgba(path: &Path, lightcraft: &Path, max: u32) -> Option<ColorImage>
     Some(ColorImage::from_rgba_unmultiplied(size, small.as_raw()))
 }
 
-fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
-    })
+/// Decodes a picture turned the way the camera held it: photos shot upright carry an EXIF
+/// orientation the pixels themselves don't have.
+fn open_upright(path: &Path) -> Option<image::DynamicImage> {
+    use image::ImageDecoder as _;
+    let mut decoder = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    Some(img)
 }

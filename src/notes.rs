@@ -319,6 +319,7 @@ fn parse_fragment(reply: &str, catalogs: &[Catalog]) -> Result<PhotoExtras> {
     let mut out = PhotoExtras {
         lightcraft: f.lightcraft.steps,
         photocraft: f.photocraft.steps,
+        ..PhotoExtras::default()
     };
     for (app, steps) in [
         (crate::apps::App::LightCraft, &mut out.lightcraft),

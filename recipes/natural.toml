@@ -1,0 +1,10 @@
+# Natural finish: the starting recipe of the window. It adds no fixed look of its own; with the
+# AI finish on, the AI sets each photo's tone and colour (matching your reference photos when you
+# give some). No automatic blemish removal: on portraits with strong lipstick or makeup it heals
+# the lips and leaves smears, so it is left to recipes that ask for it.
+# Originals are never touched; the run writes into its own folder.
+
+[[stage]]
+app = "lightcraft"
+steps = []
+export = { format = "jpg", quality = 94 }

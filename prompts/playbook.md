@@ -225,6 +225,10 @@ Each situation lists what people say, what they mean, and the recipe to emit.
 
 **S20. "Remove the pimples" / "little spots" / "clean the skin"**
 - LightCraft: `spot.findBlemishes {sensitivity: 50, maxPerFace: 6}` **[model: yunet]**.
+- Only when the request asks for it in so many words. Never add it on your own to a "cinematic",
+  "epic" or general portrait request, and never for cosplay, stage or heavy makeup, coloured
+  contact lenses, glitter or strong lipstick: it takes the iris, the lash line and the corners of
+  painted lips for spots and heals them into smears that ruin the photo.
 - Natural look: `sensitivity` 35, `maxPerFace` 4.
 - Beauty look ("pele perfeita"): `sensitivity` 65, `maxPerFace` 12.
 - Faces narrower than about 160 px at 1600 px, such as group photos and wide shots, are
@@ -467,11 +471,10 @@ Each situation lists what people say, what they mean, and the recipe to emit.
 Always follow these shapes.
 
 ```toml
-# Portrait clean-up + cinematic (jpg in, jpg out)
+# Cinematic portrait (jpg in, jpg out)
 [[stage]]
 app = "lightcraft"
 steps = [
-  { cmd = "spot.findBlemishes", params = { sensitivity = 45, maxPerFace = 6 } },
   { cmd = "preset.apply", params = { id = "lc.cinematic", amount = 80 } },
   { cmd = "mask.add", params = { kind = "background" } },
   { cmd = "mask.adjust", params = { values = { exposure = -0.35, temp = -8 } } },

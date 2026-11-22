@@ -25,6 +25,8 @@ steps. Kimera never changes the apps and never writes over a user's photo.
 | `catalog.rs` | The apps' command registries, read from the CLIs and cached per version. |
 | `writer.rs` | Request → recipe: system prompt (contract + playbook + catalogs), checks, retries. |
 | `notes.rs` | Circled regions on one photo → steps for that photo (`NotesJob`). |
+| `portrait.rs` | Faces (YuNet landmarks) and SAM 3 cut-outs found once per photo, masks placed from them, the PhotoCraft frequency-separation retouch. |
+| `look.rs` | The per-photo AI finish: measurements, reference photos, develop sliders in passes. |
 | `analysis.rs` | The AI's look at each photo (closed eyes, red eyes) and LightCraft previews. |
 | `ai.rs` | One `ask()` over the four providers. |
 | `launch.rs` | Starts the Craft apps at Kimera's start (`launch.ps1` on Windows: WMI, hide/minimize). |
@@ -95,6 +97,15 @@ adapters in line with these facts:
   `spot.findBlemishes` needs the YuNet face detector. Steps like these belong in `optional`
   groups.
 - `lightcraft-cli render <in> -o <out> --size N` makes a preview of any format, raw included.
+- `run … --script -` reads `{"command","params"}` JSON lines on stdin: use it when parameters are
+  long (a Windows command line holds 32 767 characters).
+- `faces.detect {apply:false}` gives each face's rect and five landmarks (eyes, nose, mouth
+  corners), normalized. Headless, `mask.add {kind:"subject"}` does nothing; `kind:"prompt"` works
+  (~55 s to load SAM 3, a few seconds per further prompt) and `develop.get` then holds the
+  segmentation (`seg`, tens of KB), which `mask.add` takes back with no model.
+- Radial masks take `rx` in widths and `ry` in heights. `spot.findBlemishes` heals irises and lip
+  corners on made-up faces; never add it unasked.
+- PhotoCraft's `filter.render.relight` blows a photo out even at low settings; don't use it.
 
 ## Verifying a change
 

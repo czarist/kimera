@@ -7,6 +7,42 @@ All notable changes to Kimera are listed here. The format follows
 ## [Unreleased]
 
 ### Added
+- Portrait finish placed by detectors, not guesses: LightCraft's face detector finds the eyes and
+  mouth, and SAM 3 (when installed) cuts out the person and the hair once per photo, stored and
+  reused. The AI then sets each area: skin, face light, flash hot spots, eyes, lips, the person,
+  the hair and the background.
+- Skin retouch by frequency separation in PhotoCraft: tone and blotches evened, pores kept, eyes
+  and mouth left out. The AI picks its strength per photo.
+- The AI finish works in layers: besides the global sliders it sets the skin (tone, colour,
+  smoothing), a light on the face and the background, through LightCraft masks that need no model.
+  Skin is measured on its own, so a reference's coloured backdrop no longer tints the whole photo.
+- Each run folder keeps its `recipe.toml` and, with the AI finish, `finish.jsonl` (what the AI set
+  for each photo).
+
+- **AI finish per photo** (`look.rs`): the AI sees each photo as the recipe renders it, with
+  measurements Kimera takes (brightness, black and white points, contrast, saturation, colour
+  cast), sets LightCraft's develop sliders for that photo, sees the result and corrects it
+  (Quick: 1 pass, Careful: 2). Without references, the first finished photo anchors the rest of
+  the series. CLI: `kimera run --finish [--brief "…"]`.
+- **Reference photos**: finished photos of the user's whose look the finish matches (shown to the
+  AI and measured as the target); the recipe writer sees them too. CLI: `--reference <file or
+  folder>`.
+- Redesigned window: themed cards, a readable recipe summary (the TOML is under "Edit the recipe
+  file"), a progress card with the current step and the time left (timed from the run's own
+  photos), result thumbnails in the grid, a before / after view with a divider to drag, and the
+  technical log hidden under "Details".
+- `recipes/natural.toml`, the window's new starting recipe (no fixed look; the finish does it).
+
+### Fixed
+- The window no longer freezes when a test ends: the before / after view and the note editor decode
+  their large pictures in the background.
+- No automatic blemish removal unless asked: LightCraft's blemish finder took an iris and the
+  corners of painted lips for spots and healed them into smears. The default recipe
+  (`natural.toml`) drops it, and the AI no longer adds it to general or cosplay portraits.
+
+- Photos shot upright showed lying down in the window: thumbnails now follow the EXIF orientation.
+- The lens database showed as "not downloaded" even when installed (the headless check never loads
+  it); the check asks the running LightCraft, and a dropped download is retried up to 3 times.
 
 - **Notes on a photo**: circle part of a photo in the window (*Notes…*, or double-click) and say
   what to do there; `--notes FILE` on `kimera run` and `kimera ask`. The AI sees the photo with the

@@ -18,6 +18,10 @@ use std::time::Duration;
 /// LightCraft caps a reply at 64 MiB before the newline.
 const MAX_REPLY: u64 = 64 * 1024 * 1024 + 1;
 
+/// Characters of arguments beyond which the steps go to `--script -` on stdin instead: a Windows
+/// command line holds 32 767, and a stored SAM 3 segmentation alone is tens of thousands.
+const ARGS_BUDGET: usize = 24_000;
+
 pub struct Control {
     addr: SocketAddr,
     next_id: u64,
@@ -158,9 +162,18 @@ pub fn run_file(
     export: &FileExport,
     cancel: &AtomicBool,
 ) -> Result<()> {
+    let args = run_args(input, out, steps, export)?;
     let mut cmd = Command::new(cli);
-    cmd.args(run_args(input, out, steps, export)?);
-    let o = procrun::run(cmd, None, cancel)?;
+    let stdin = if args.iter().map(|a| a.len()).sum::<usize>() > ARGS_BUDGET {
+        cmd.args(["run", "--import"])
+            .arg(input)
+            .args(["--script", "-"]);
+        Some(script_of(out, steps, export)?)
+    } else {
+        cmd.args(args);
+        None
+    };
+    let o = procrun::run(cmd, stdin, cancel)?;
     if let Some((i, msg)) = first_failure(&o.stdout) {
         return Err(StageFailed {
             step: (i < steps.len()).then_some(i),
@@ -184,6 +197,23 @@ pub fn run_file(
         bail!("LightCraft reported success but wrote no {}", out.display());
     }
     Ok(())
+}
+
+/// The same commands as [`run_args`], as `--script` JSON lines.
+fn script_of(out: &Path, steps: &[&Step], export: &FileExport) -> Result<String> {
+    let mut s = String::new();
+    for st in steps {
+        let params: Value = serde_json::from_str(&st.params_json()?)?;
+        s.push_str(&serde_json::to_string(
+            &json!({"command": st.cmd, "params": params}),
+        )?);
+        s.push('\n');
+    }
+    s.push_str(&serde_json::to_string(
+        &json!({"command": "app.export", "params": export.params(out)?}),
+    )?);
+    s.push('\n');
+    Ok(s)
 }
 
 /// `run` prints one `{"command", "ok", "result" | "error"}` line per command, in order, and

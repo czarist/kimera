@@ -155,6 +155,18 @@ impl Models {
     }
 }
 
+/// Lenses in the database of the running LightCraft, when its control channel answers.
+fn running_lenses(cfg: &Config) -> Option<u64> {
+    let mut lc = lightcraft::Control::new(&cfg.lightcraft.control).ok()?;
+    if !lc.answers() {
+        return None;
+    }
+    lc.execute("lens.databaseStatus", json!({}))
+        .ok()?
+        .get("lenses")
+        .and_then(Value::as_u64)
+}
+
 /// The optional LightCraft models: AI masks (SAM 3), face detector (YuNet), lens database.
 pub fn models(cfg: &Config, cancel: &AtomicBool) -> Vec<Check> {
     let q = lightcraft::query(
@@ -189,11 +201,14 @@ pub fn models(cfg: &Config, cancel: &AtomicBool) -> Vec<Check> {
                     && x.get("installed").and_then(Value::as_bool) == Some(true)
             })
         });
-    let lenses = q
-        .get(2)
-        .and_then(|v| v.get("lenses"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    // A headless demo session does not load the lens database, so it always counts 0 lenses;
+    // the running app (when it answers) knows whether it is installed.
+    let lenses = running_lenses(cfg).unwrap_or_else(|| {
+        q.get(2)
+            .and_then(|v| v.get("lenses"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    });
     let model = |name, which: Model, ok: bool, yes: String, no: &str| Check {
         name,
         model: Some(which),
@@ -233,6 +248,13 @@ const DOWNLOAD_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// How often the download's progress is asked for.
 const POLL_EVERY: Duration = Duration::from_secs(2);
+
+/// Downloads started before giving up: a dropped connection is common, a second try usually
+/// gets through.
+const DOWNLOAD_TRIES: u32 = 3;
+
+/// Pause before trying a failed download again.
+const RETRY_AFTER: Duration = Duration::from_secs(5);
 
 /// An optional LightCraft model some recipes need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,18 +342,36 @@ pub fn install(cfg: &Config, which: Model, progress: &mut dyn FnMut(&str)) -> Re
             |v| match v.pointer("/download/state").and_then(Value::as_str) {
                 Some("done") => Some(Ok(())),
                 Some("failed") | Some("cancelled") => {
-                    Some(Err(anyhow::anyhow!("lens database download stopped: {v}")))
+                    let why = v
+                        .pointer("/download/error")
+                        .and_then(Value::as_str)
+                        .map_or_else(|| v.to_string(), str::to_owned);
+                    Some(Err(anyhow::anyhow!(
+                        "lens database download stopped: {why}"
+                    )))
                 }
                 _ => None,
             },
         ),
     };
-    lc.execute(start.0, start.1)?;
+    lc.execute(start.0, start.1.clone())?;
     let t = Instant::now();
+    let mut tries = 1u32;
     loop {
         let v = lc.execute(status, json!({}))?;
-        if let Some(r) = done(&v) {
-            return r;
+        match done(&v) {
+            // The downloads come from public mirrors that drop connections now and then.
+            Some(Err(e)) if tries < DOWNLOAD_TRIES => {
+                tries += 1;
+                progress(&format!(
+                    "{which}: {e:#}; trying again ({tries} of {DOWNLOAD_TRIES})"
+                ));
+                std::thread::sleep(RETRY_AFTER);
+                lc.execute(start.0, start.1.clone())?;
+                continue;
+            }
+            Some(r) => return r,
+            None => {}
         }
         if t.elapsed() > DOWNLOAD_LIMIT {
             bail!("{which}: still downloading after 2 hours; check LightCraft");
